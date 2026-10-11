@@ -29,10 +29,12 @@ jobs:
       run:
         shell: msys2 {0}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - uses: msys2/setup-msys2@v2
         with:
+          # MINGW64 (msvcrt) is the same C runtime as the local build. It still works.
           msystem: MINGW64
+          suppress-deprecation-warnings: msystem-mingw64
           update: true
           install: >-
             mingw-w64-x86_64-gcc
@@ -47,7 +49,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL2_ROOT="$(pwd)/sdl2/x86_64-w64-mingw32"
-          cmake --build build
+          cmake --build build > build.log 2>&1 || { bash .github/report-errors.sh build.log; exit 1; }
       - name: Package
         run: |
           name="CPCSyntaxError-win64-${GITHUB_REF_NAME//\//-}"
@@ -69,7 +71,7 @@ jobs:
     # The oldest supported runner, so the binary runs on older distributions too.
     runs-on: ubuntu-22.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install the build tools and SDL2
         run: |
           sudo apt-get update
@@ -77,7 +79,7 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
-          cmake --build build
+          cmake --build build > build.log 2>&1 || { bash .github/report-errors.sh build.log; exit 1; }
       - name: Package
         run: |
           name="CPCSyntaxError-linux-x86_64-${GITHUB_REF_NAME//\//-}"
@@ -111,7 +113,7 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: "10.15"
       ARCHS: "arm64;x86_64"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install the build tools
         run: brew install ninja
       - name: Build SDL2 as a universal library
@@ -128,7 +130,7 @@ jobs:
           cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
             -DCMAKE_OSX_ARCHITECTURES="$ARCHS" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
             -DCMAKE_PREFIX_PATH="$PWD/sdl2"
-          cmake --build build
+          cmake --build build > build.log 2>&1 || { bash .github/report-errors.sh build.log; exit 1; }
       - name: Make the app bundle
         run: |
           # The bundle version must be numbers: the tag without its v, or 0.0.0 for a branch.

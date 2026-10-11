@@ -226,7 +226,9 @@ void assign(BLOCK **ptr, BLOCK *chain);
 //BLOCK *zx0_optimize(unsigned char *input_data, int input_size, int skip, int offset_limit);
 //unsigned char *zx0_compress(BLOCK *optimal, unsigned char *input_data, int input_size, int skip, int backwards_mode, int invert_mode, int *output_size, int *delta);
 
-#ifndef _WIN32
+/* CPCSyntaxError: MinGW defines _WIN32 too, but it needs these declarations. Without them, GCC 13
+   assumes an int result (wrong for size_t) and GCC 14 and later stop with an error. */
+#if !defined(_WIN32) || defined(__MINGW32__)
 size_t salvador_compress(const unsigned char *pInputData, unsigned char *pOutBuffer, const size_t nInputSize, const size_t nMaxOutBufferSize,
    const unsigned int nFlags, const size_t nMaxOffset, const size_t nDictionarySize, void(*progress)(long long nOriginalSize, long long nCompressedSize), void *pStats);
 size_t salvador_get_max_compressed_size(const size_t nInputSize);
