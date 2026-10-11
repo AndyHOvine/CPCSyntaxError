@@ -93,7 +93,7 @@ struct CrtcType1 : CrtcBehaviour {
     // fraction is a flat 2/16 µsec, and it is this chip's own -- CRTC 0 and 2 read
     // 1/16 on the same page. It makes the screen shift 7 pixels per R3l step here,
     // which is the paragraph's "instead of the expected 8 pixels".
-    int hsyncFallPhase16() const override { return 2; }
+    int hsyncFallPhase16(int) const override { return 2; }
     // ACCC §9.3.4.3 (p.58): the zone lasts 32 Pixel-M2 from the 6th, so it ends on the
     // 6th of the character after the HSYNC. That is also the Pixel-M2 the GATE ARRAY
     // changes mode on, which is why "on CRTC 1, the reactivation of the display
@@ -358,10 +358,13 @@ struct CrtcType1 : CrtcBehaviour {
         }
         // The cancellation half of that trigger: an R4/R9 write inside the enlarged
         // tail that breaks the last-line condition arms the RFD proper.
+        // §13.7.1.2 names the condition "C9=R9". This chip asks that question with
+        // rasterMatches(), the same test as the R9 write below and the line end. The
+        // old "R9 + (R8 & 1)" had no source, and in IVM C9 never reaches R9.
         if (crtc.lastLineEnlarged && (reg == 4 || reg == 9)) {
             bool stillLast = reg == 4
                 ? crtc.vertical == (crtc.registers[4] & 0x7f)
-                : crtc.raster == crtc.registers[9] + (crtc.registers[8] & 1);
+                : rasterMatches(crtc);
             if (!stillLast) {
                 crtc.rfdActive = true;
                 crtc.lastLineEnlarged = false;
@@ -480,7 +483,7 @@ struct CrtcType1 : CrtcBehaviour {
         // RFD used to carry.
         if ((crtc.interlaceField & 1) == 0 && !crtc.rfdIgnoresParity) return;   // case 1: faulty test, row repeats
         if (!crtc.rasterMatchesMaximum()) return;
-        crtc.nextRowAddress = (crtc.rowAddress + crtc.horizontal) & 0x3fff;
+        crtc.nextRowAddress = crtc.maRow & 0x3fff;       // the MA latch, as above (§17.1)
         crtc.rfdActive = false;                          // case 2: VMA' taken, RFD retires
     }
     bool freezesStartAddressReload(CRTC6845& crtc) const override {

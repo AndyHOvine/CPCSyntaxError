@@ -1314,8 +1314,18 @@ void EmuHost::setMonitorSet(const std::string& id) {
     applyMonitorSet();
 }
 
+void EmuHost::setMonitorHolds(int hHold, int vHold) {
+    monitorHHold = hHold;
+    monitorVHold = vHold;
+    applyMonitorSet();
+}
+
 void EmuHost::applyMonitorSet() {
     if (!emu) return;
+    // The two hold controls go to the monitor chip. It takes them at its next field and
+    // pulls in by itself, so the chip is not reset.
+    emu->monitorRenderer->hHold = monitorHHold;
+    emu->monitorRenderer->vHold = monitorVHold;
     // No set chosen is nullptr, not the shipped set: the core then re-takes the machine's
     // own at every reset, so a later model change gets its own monitor.
     emu->setMonitorModel(monitorSetId.empty() ? nullptr : monitorModelFor(monitorSetId));

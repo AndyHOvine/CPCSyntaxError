@@ -54,6 +54,10 @@ public:
     // WHICH MONITOR IS PLUGGED IN (src/core/monitor_model.h), by id -- "" means the set
     // the machine shipped with, which is the only pairing ACCC 15.1 calls centred.
     std::string monitorSetId;
+    // THE HOLD CONTROLS on the back of the set (CtmMonitor::hHold, vHold): H. Hold in
+    // Pixel-M2 per line, V. Hold in lines. 0 is the set as calibrated.
+    int monitorHHold = 0;
+    int monitorVHold = 0;
     // WHICH GATE ARRAY IS FITTED (src/core/gate_array_model.h): 40007, 40008 or 40010 on a
     // classic machine -- ACCC 9 (p.46) names all three in 464s and 6128s. 0 is the 40010,
     // the part most 6128s carry. On CRTC 3/4 there is no choice: the ASIC (40489/40226)
@@ -291,6 +295,7 @@ public:
     void setMonitorMode(const std::string& mode);
     // Plug a set in, by monitor_model.h id; "" restores the one the machine shipped with.
     void setMonitorSet(const std::string& id);
+    void setMonitorHolds(int hHold, int vHold);
     void applyMonitorSet();
     // Fit a GATE ARRAY part (40007/40008/40010, 0 = the 40010). Live: the chip reads its
     // model on every pixel, so no reset is needed.

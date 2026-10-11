@@ -5,6 +5,12 @@
 
 namespace cpcse {
 
+CtmMonitor::CtmMonitor() {
+    if (const char* h = std::getenv("CPCSE_MONITOR_HHOLD")) hHold = std::atoi(h);
+    if (const char* v = std::getenv("CPCSE_MONITOR_VHOLD")) vHold = std::atoi(v);
+    reset();
+}
+
 void CtmMonitor::reset() {
     character = 0;
     pixel = 0;
@@ -200,7 +206,7 @@ void CtmMonitor::decide() {
         // a staircase three characters deep under the scoreboard, which is exactly what
         // the picture showed.
         const int step = phase < 0 ? -phase : phase;
-        if (step > 16) { hsyncCount -= phase; lineSnap16 -= phase; }   // re-lock, this line too
+        if (step > 16 && !holdOutOfRange) { hsyncCount -= phase; lineSnap16 -= phase; }   // re-lock, this line too
         else if (phase < 0) hsyncCount += phase < -5 ? 3 : 1;
         else if (phase > 0) hsyncCount -= phase > 5 ? 3 : 1;
     // Out of lock: pull 5 Pixel-M2 a line, and ALWAYS THE SAME WAY. That looks like a
@@ -221,7 +227,7 @@ void CtmMonitor::decide() {
     // characters early for a line) 64 lines -- a diagonal tear down half the screen where
     // the real CPC shows one thin line. A sync one line period after the last one is the
     // train, and the sweep re-locks onto it at once, whichever half it fell in.
-    } else if (pendStable > -1024 && regularSync) {
+    } else if (pendStable > -1024 && regularSync && !holdOutOfRange) {
         decisionBranch = 'r';                   // re-lock onto a regular train
         const int wrapped = pendPhase < -(hsyncLimit >> 1) ? pendPhase + hsyncLimit : pendPhase;
         hsyncCount -= wrapped; lineSnap16 -= wrapped;
@@ -251,17 +257,17 @@ void CtmMonitor::vSync() {
         static int since = 0;
         if (vsyncCount < since) since = 0;           // the flywheel accepted one and reset
         std::fprintf(stderr, "CVSYNC gap=%d cum=%d\n", (vsyncCount - since) / 2, vsyncCount / 2);
-        since = vsyncCount < MONITOR_VSYNC_MIN ? vsyncCount : 0;
+        since = vsyncCount < vsyncWindowMin() ? vsyncCount : 0;
     }
     // ACCC §16.1: "As with HSYNC's, it is possible to generate several VSYNC's during
     // a frame, but the monitor will only be able to lock onto one VSYNC signal". The
     // vertical oscillator is retriggerable only once its minimum period has elapsed;
     // a pulse arriving before that -- a rupture's mid-screen VSYNC, or a second C4==R7
     // from an R7 switched during the sync -- is ignored by the flywheel.
-    if (vsyncCount < MONITOR_VSYNC_MIN) {
+    if (vsyncCount < vsyncWindowMin()) {
         if (traceVsync)
             std::fprintf(stderr, "vSync REFUSED period=%d (min %d)\n",
-                         vsyncCount, MONITOR_VSYNC_MIN);
+                         vsyncCount, vsyncWindowMin());
         return;
     }
     // The period the deflection is pulled to is the MEAN OF TWO FIELDS, not this one.
@@ -269,7 +275,7 @@ void CtmMonitor::vSync() {
     // mean is the 156.5 the CRTC actually generated, and a period with an odd number of
     // half lines is what makes alternate fields sit half a line apart. A progressive
     // drive averages two equal fields and is unchanged.
-    int measured = std::min(vsyncCount, MONITOR_VSYNC_MAX);
+    int measured = std::min(vsyncCount, vsyncWindowMax());
     // The rate the oscillator is LOCKED to moves only when a new one arrives twice
     // running. One odd field is inside the pull-in range and moves nothing: a CTM fed
     // 312, 345, 312, 311 -- which is what SHAKER's module C drives while it switches IVM
@@ -293,7 +299,7 @@ void CtmMonitor::vSync() {
     // back into lock 16 lines a field. SHAKER A7 (CRTC 0) and DH/B2 were both shot during
     // that walk, 16 and 32 lines off. Ignored, the next pulse lands inside the window
     // (the ramp free-runs to MAX meanwhile) and retriggers it at once.
-    vsyncPulse = vsyncMatch >= MONITOR_VSYNC_MIN;
+    vsyncPulse = vsyncMatch >= vsyncWindowMin();
     // The line period is latched here, once per field, from what the sweep has been
     // measuring off the pin -- where the CRTC's R0 used to be read.
     // ...the field's MEAN line period, which a flywheel integrates to, not the last one.
@@ -301,7 +307,12 @@ void CtmMonitor::vSync() {
         measuredPeriod = (int)((fieldPeriodSum + fieldPeriodCount / 2) / fieldPeriodCount);
     fieldPeriodSum = 0;
     fieldPeriodCount = 0;
-    hsyncLimit = std::max(MONITOR_HSYNC_MIN, std::min(MONITOR_HSYNC_MAX, measuredPeriod));
+    hsyncLimit = std::max(MONITOR_HSYNC_MIN + hHold, std::min(MONITOR_HSYNC_MAX + hHold, measuredPeriod));
+    // H. Hold turned so far that the period the line runs at is outside the oscillator's
+    // window: the set cannot hold the line. Its AFC then cannot snap back onto the sync on
+    // every line either, so the re-locks are off and the picture tears, as on a real set.
+    // Never with H. Hold at 0, so a set as calibrated behaves exactly as before.
+    holdOutOfRange = hHold != 0 && hsyncLimit != measuredPeriod;
 }
 
 bool CtmMonitor::clockPixel(bool csyncActive) {
@@ -495,8 +506,12 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
     pixel = 0;
     vsyncCount += 2;
     vsyncMatch += 2;
-    if ((vsyncPulse && vsyncMatch >= MONITOR_VSYNC_MIN)
-        || vsyncMatch > MONITOR_VSYNC_MAX) {
+    if ((vsyncPulse && vsyncMatch >= vsyncWindowMin())
+        || vsyncMatch > vsyncWindowMax()) {
+        // Was this retrace a sync's, or the oscillator running free? The frame that ends
+        // here began at the previous retrace.
+        endedFrameFreeRun = frameStartFreeRun;
+        frameStartFreeRun = !(vsyncPulse && vsyncMatch >= vsyncWindowMin());
         verticalFrameEdge = true;
         vsyncPulse = false;
         vsyncMatch = 0;

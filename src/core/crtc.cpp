@@ -1298,8 +1298,9 @@ bool CrtcBehaviour::addsInterlaceLine(CRTC6845& crtc) const { return (crtc.parit
 // Default Hsync advance = the standard 6845 counter. ASIC overrides.
 void CrtcBehaviour::advanceHsync(CRTC6845& crtc) const { crtc.updateHsyncStandard(); }
 // Default next-row start-address reload at C0=R1: on a raster-max match. ASIC honours splits.
+// ACCC §17.1: VMA' latches the MA counter. Each chip overrides this with the same latch.
 void CrtcBehaviour::reloadNextRowAddress(CRTC6845& crtc) const {
-    if (crtc.rasterMatchesMaximum()) crtc.nextRowAddress = (crtc.rowAddress + crtc.horizontal) & 0x3fff;
+    if (crtc.rasterMatchesMaximum()) crtc.nextRowAddress = crtc.maRow & 0x3fff;
 }
 void CRTC6845::updateVertical() {
     bool newFrameStarted = false;

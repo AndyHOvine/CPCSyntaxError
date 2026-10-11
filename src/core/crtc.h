@@ -213,7 +213,8 @@ struct CrtcBehaviour {
     // So this is the residue, in 1/16 µsec, between the character boundary and the
     // moment the GATE ARRAY sees this chip's HSYNC drop. Each chip states its own; the
     // chapter tabulates CRTC 0, 1 and 2 only, so the ASIC's keep 0 until it does.
-    virtual int hsyncFallPhase16() const { return 0; }
+    // The input is R3l, the HSYNC width in characters. CRTC 2's row is not flat.
+    virtual int hsyncFallPhase16(int) const { return 0; }
     // ACCC §27.7.2 (p.290), the same phase shift seen by the Z80A rather than by the
     // monitor. "CRTCs are not reliable concerning the management of their HSYNC signal.
     // In particular, the CRTC 1 ... the end of the HSYNC signal can occur more or less

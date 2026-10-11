@@ -209,7 +209,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; std::vector<std::string> xroms; std::string serialLine, recordTape;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -230,6 +230,8 @@ int main(int argc, char** argv) {
             else if (a == "--seq" && i + 1 < argc) seq = std::atoi(argv[++i]);   // save this many CONSECUTIVE frames (motion) from --frames
             else if (a == "--diag") diag = true;
             else if (a == "--beam") beam = true;
+            else if (a == "--hhold" && i + 1 < argc) monitorHHold = std::atoi(argv[++i]);   // H. Hold, Pixel-M2 per line
+            else if (a == "--vhold" && i + 1 < argc) monitorVHold = std::atoi(argv[++i]);   // V. Hold, lines
             else if (a == "--gfx9000") gfx9000 = true;
             else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
             else if (a == "--playcity") playcity = true;                      // a PlayCity
@@ -253,6 +255,7 @@ int main(int argc, char** argv) {
             EmuHost host; host.scanModels();
             loadMachineSounds();
             host.gateArrayPart = wantGa;
+            host.monitorHHold = monitorHHold; host.monitorVHold = monitorVHold;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
             if (sf3) host.symbifaceModule = "sf3";
@@ -623,6 +626,7 @@ int main(int argc, char** argv) {
     }
     host.setMonitorMode(gets("monitor", ""));
     host.setMonitorSet(gets("monitorset", ""));
+    host.setMonitorHolds(geti("monitorhhold", 0), geti("monitorvhold", 0));
     host.audioEnabled   = geti("audio", 1) != 0;
     host.masterVolume   = level("volume", 0.6, 0.0, 1.0);
     host.driveSounds    = geti("drive_sounds", 1) != 0;
@@ -914,6 +918,8 @@ int main(int argc, char** argv) {
             f << "autoboot=1\n";
             f << "monitor=" << host.monitorMode << "\n";
             f << "monitorset=" << host.monitorSetId << "\n";
+            f << "monitorhhold=" << host.monitorHHold << "\n";
+            f << "monitorvhold=" << host.monitorVHold << "\n";
             f << "gatearray=" << host.gateArrayPart << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";

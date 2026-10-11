@@ -130,6 +130,12 @@ struct CrtcType0 : CrtcBehaviour {
     // "If ((C9 x 2) or ParityFrame) == (R9 + ParityFrame)" — the doubled C9 carrying
     // the frame parity is what is tested against R9, not C9 itself.
     bool rasterMatches(CRTC6845& crtc) const override { return c9AtR9(crtc, crtc.maximumRaster()); }
+    // ACCC §14.4's table (p.134), the R3.NJIT row for this chip, gives each cell as a
+    // range: 0.0625-0.1250 / 1.0625-1.1250 / 2.0625-2.1250 / 3.0625-3.1250 µsec for
+    // R3l = 2 / 3 / 4 / 5, so the pin falls 1/16 to 2/16 µsec after the boundary.
+    // §9.3.1 (p.52) gives the R3l=2 pulse again: "On CRTC 0 and 1, it lasts 2 or 3
+    // pixel-M2". 2/16 is the only value inside both pages.
+    int hsyncFallPhase16(int) const override { return 2; }
     // The C9/R9 comparison, against a given R9 -- the register as it stands, or as it stood
     // before a write (§10.3.1's R0-position rule needs both).
     static bool c9AtR9(CRTC6845& crtc, int r9Value) {

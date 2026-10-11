@@ -44,7 +44,10 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - **The Gate Array** models are 40007, 40008, 40010 and the ASICs 40226 and 40489. Each model
   has its own pixel timing. Select the model in **Machine → Gate Array**.
 - **The monitor** models are the CTM 640/644, CM14, GT 64/65 and MM12. The monitor locks to
-  the composite sync that the Gate Array makes.
+  the composite sync that the Gate Array makes. It has **H. Hold** and **V. Hold** controls,
+  as the pots on a real monitor (**Video → Monitor**). Turn V. Hold too far and the picture
+  rolls. Turn H. Hold too far and the picture breaks into diagonal bars. **Centre both** sets
+  the default again.
 - **The Z80** passes ZEXDOC, ZEXALL and all the tests of z80test 1.2a by Patrik Rak. This
   includes the undocumented flags, MEMPTR, SCF/CCF on a Zilog chip and interrupted block
   instructions.
@@ -190,10 +193,25 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 
 ## Getting started
 
-1. Download `CPCSyntaxError-win64-<version>.zip` from the [Releases](../../releases) page.
+1. Download the package for your system from the [Releases](../../releases) page:
+
+   | System | Package |
+   |---|---|
+   | Windows (64-bit) | `CPCSyntaxError-win64-<version>.zip` |
+   | Linux (x86_64) | `CPCSyntaxError-linux-x86_64-<version>.tar.gz` |
+   | macOS 10.15 or later (Apple silicon and Intel) | `CPCSyntaxError-macos-universal-<version>.zip` |
+
 2. Unzip it into a folder.
-3. Run `cpcse.exe`. You can also build the program yourself (refer to
-   [Building from source](#building-from-source)).
+3. Run the program:
+   - Windows: run `cpcse.exe`.
+   - Linux: install SDL2 from your distribution (for example `sudo apt install libsdl2-2.0-0`),
+     then run `./cpcse`.
+   - macOS: the app does not have an Apple Developer ID signature. The first time, right-click
+     `CPCSyntaxError.app` and select **Open**, then select **Open** again. Keep the app in a
+     folder that you can write to, because it keeps its settings inside the app.
+
+You can also build the program yourself (refer to [Building from source](#building-from-source)).
+GitHub Actions builds the three packages (`.github/workflows/build.yml`).
 
 The firmware ROMs of the CPC 464 and CPC 6128 and the system cartridge of the CPC Plus and
 GX4000 are included in `roms/`. Amstrad gave permission to distribute their copyrighted
@@ -246,7 +264,7 @@ A headless screenshot mode is available for scripts:
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--savesna out.sna]
           [--crtc 0-4] [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
-          [--disk-writeback] [--record-tape out.cdt]
+          [--disk-writeback] [--record-tape out.cdt] [--hhold -79..79] [--vhold -50..50]
           [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--ide <folder>] [--xrom <slot>=<rom file>]
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
           [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
@@ -447,11 +465,6 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 
 ## Known issues
 
-- **The C-HSYNC width on CRTC 0 and 2.** On these chips, the monitor sync of the Gate Array is
-  a small part of a microsecond longer than the table in the Compendium (§14.4, p.134). The
-  emulator does not use the width in the table yet. The monitor model does not yet show how
-  the monitor recovers after a short sync. Without that model, the table width makes some
-  pictures worse.
 - **SymAmp under SymbOS.** SA2 songs for 60 Hz or 70 Hz that set their speed in the pattern
   play approximately 1.4 times too slowly. The cause is the player of SymAmp, not the
   emulator. A real CPC plays them at the same speed. MP3 playback is not available, because it

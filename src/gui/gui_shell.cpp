@@ -452,6 +452,25 @@ void GuiShell::monitorSetItems(bool asMenu) {
         if (asMenu ? ImGui::MenuItem(m->name, nullptr, current == m) : ImGui::Selectable(m->name, current == m))
             host.setMonitorSet(m->id);
 }
+// The two hold controls on the back of the set (docs/ service manuals).
+void GuiShell::monitorSyncItems() {
+    int hhold = host.monitorHHold, vhold = host.monitorVHold;
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::SliderInt("H. Hold", &hhold, -79, 79)) host.setMonitorHolds(hhold, vhold);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The horizontal oscillator's free-running period against\n"
+                          "the CPC's 64 usec line, in Pixel-M2 per line. 0 is a set\n"
+                          "aligned as the service manual says (15625 Hz); the end\n"
+                          "of the control is 14500 Hz (+79). Turned too far, the\n"
+                          "set can no longer hold the line.");
+    ImGui::SetNextItemWidth(160);
+    if (ImGui::SliderInt("V. Hold", &vhold, -50, 50)) host.setMonitorHolds(hhold, vhold);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The vertical oscillator's free-running period, in lines.\n"
+                          "0 is the set as calibrated. Turned too far, it no longer\n"
+                          "holds the CPC's 312 lines and the picture rolls.");
+    if (ImGui::SmallButton("Centre both")) host.setMonitorHolds(0, 0);
+}
 
 // ============================================================== settings sections
 // Video / Audio / Input / Expansions / tape options are in gui_panels.cpp.
@@ -546,7 +565,12 @@ void GuiShell::menuMachine() {
     ImGui::TextDisabled("Video chips");
     if (ImGui::BeginMenu("CRTC", host.currentModel >= 0)) { crtcItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("Gate Array", host.currentModel >= 0)) { gateArrayItems(true); ImGui::EndMenu(); }
-    if (ImGui::BeginMenu("Monitor")) { monitorSetItems(true); ImGui::EndMenu(); }
+    if (ImGui::BeginMenu("Monitor")) {
+        monitorSetItems(true);
+        ImGui::Separator();
+        monitorSyncItems();
+        ImGui::EndMenu();
+    }
     ImGui::Separator();
     if (ImGui::BeginMenu("ROMs")) { sectionRoms(true); ImGui::EndMenu(); }
     ImGui::Separator();
@@ -761,6 +785,7 @@ void GuiShell::windowMachine() {
             {
                 const MonitorModel* set = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
                 if (ImGui::BeginCombo("##machinemonitor", set ? set->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
+                monitorSyncItems();
             }
             ImGui::EndDisabled();
         }

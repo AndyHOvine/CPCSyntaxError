@@ -238,6 +238,24 @@ public:
     // vsyncLimit is that averaged period (odd under interlace, even without it), so
     // accumulating it and keeping bit 0 is the half line -- and it costs nothing when
     // the signal is not interlaced, because an even period never changes the parity.
+    // THE TWO HOLD CONTROLS on the back of the set (docs/ service manuals: H.HOLD VR403,
+    // V.HOLD VR405). 0 is the set as calibrated, and then nothing here changes.
+    //   * V. Hold moves the vertical oscillator's free-running period, and with it the
+    //     window in which a vertical sync can trigger the retrace (MONITOR_VSYNC_MIN..MAX),
+    //     in lines. Turned far enough, the window no longer holds the CPC's 312 lines
+    //     and the picture rolls. The LA7800 (docs/LA7800.pdf p.1) gives 50 to 60 Hz.
+    //   * H. Hold moves the horizontal oscillator's free-running period, and with it the
+    //     window the flywheel's line period can settle in (MONITOR_HSYNC_MIN..MAX), in
+    //     Pixel-M2. The CTM's alignment sets it to 15625 Hz; the end of the control is
+    //     14500 Hz, +79. Turned far enough, the set can no longer hold a 64 usec line.
+    int vHold = 0;
+    int hHold = 0;
+    bool holdOutOfRange = false;    // H. Hold forces the period out of the window (vSync)
+    int vsyncWindowMin() const { return MONITOR_VSYNC_MIN + 2 * vHold; }
+    int vsyncWindowMax() const { return MONITOR_VSYNC_MAX + 2 * vHold; }
+    // Whether the frame that just ended began with a free-running retrace (no sync in the
+    // window). The renderer then draws it where the oscillator put it, so it rolls.
+    bool frameStartFreeRun = false, endedFrameFreeRun = false;
     int verticalPhase = 0;          // half lines swept since reset, modulo nothing
     int lastVsyncPeriod = 0;        // the previous field's measured period, for the mean
     int verticalHalfLine = 0;       // 0 or 1: where this field sits between two lines
@@ -345,7 +363,9 @@ public:
     int separator = 0;              // the vertical integrator
     bool vsyncSeparated = false;    // it has already fired for this pulse
 
-    CtmMonitor() { reset(); }
+    // CPCSE_MONITOR_HHOLD / CPCSE_MONITOR_VHOLD set the pots for a tool with no settings
+    // of its own (the SHAKER runner). The GUI and the headless --shot set them too.
+    CtmMonitor();
     void reset();
     // Sample the C-SYNC pin for ONE PIXEL-M2 (0.0625 µsec), the rate the GATE ARRAY
     // clocks everything at. Active-low on the wire; `csyncActive` is true when the

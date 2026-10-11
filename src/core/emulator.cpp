@@ -125,7 +125,7 @@ GX4000::GX4000() {
         gateArray->onHsyncStart(crtc->effectiveHsyncWidth(),
             crtc->behaviour->hsyncDisplayDelayCharacters(),
             crtc->hsyncArmedBetweenCharacters,
-            crtc->behaviour->hsyncFallPhase16());   // ACCC §14.4 p.134, per chip
+            crtc->behaviour->hsyncFallPhase16(crtc->effectiveHsyncWidth()));   // ACCC §14.4 p.134, per chip
         // The monitor is NOT wired to the CRTC. Its horizontal reference is the GATE
         // ARRAY's C-HSYNC, which that chip times itself from H06 (ACCC §16.2.3), so
         // the retrace is raised from onCharacter below when SIG_GA_HSYNC rises --

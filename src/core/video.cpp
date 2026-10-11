@@ -674,6 +674,11 @@ void CpcVideo::render() {
         ? physicalFrameOriginFromVsync(rasterFrame, crtc->getPhysicalFrameOriginY ? crtc->getPhysicalFrameOriginY() : origin.y,
                                        monitor ? monitor->lockedFieldLines() : 0)
         : origin.y;
+    // A frame that began with a FREE-RUNNING retrace (V. Hold turned too far) is drawn where
+    // the oscillator cut it, not pinned to the CRTC's VSYNC: that is the roll. Only with
+    // V. Hold moved, so a set as calibrated draws exactly as it did.
+    if (physicalPos && monitor && monitor->vHold != 0 && monitor->endedFrameFreeRun)
+        physicalOriginY = 280 - (monitor->lockedFieldLines() > 0 ? monitor->lockedFieldLines() : 0);
     int physicalSourceStart = physicalRasterFrame ? rasterLineForMonitorY(0, physicalOriginY, (int)rasterFrame.size()) : 0;
     bool frameScroll = frameHorizontalScrollActive(rasterFrame, rasterFrame.empty() ? asic->horizontalScroll : 0);
     // The interlaced field is swept half a scanline lower than the other one, which is

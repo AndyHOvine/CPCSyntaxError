@@ -223,6 +223,7 @@ private:
     void gateArrayItems(bool asMenu);
     void ramItems(bool asMenu);
     void monitorSetItems(bool asMenu);
+    void monitorSyncItems();
 };
 
 } // namespace cpcse

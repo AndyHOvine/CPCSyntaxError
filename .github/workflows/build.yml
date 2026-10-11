@@ -1,0 +1,208 @@
+# Builds CPCSyntaxError for Windows, Linux and macOS.
+#
+# - A push to main, and a manual run (Actions > Build > Run workflow), builds all three and
+#   keeps the packages as workflow artifacts for 14 days.
+# - A pushed tag v* (for example v0.6.0) also attaches the three packages to the GitHub
+#   release of that tag, and makes the release if it does not exist.
+#
+# The ROMs that the repository tracks are the ones that may be shipped (roms/README.txt);
+# the ones that may not (YRW801, SP0256, ...) are never in the checkout.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  SDL2_VERSION: "2.30.9"
+
+jobs:
+  windows:
+    name: Windows (x64, MinGW)
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: msys2 {0}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-ninja
+            unzip
+            zip
+      - name: Get the SDL2 MinGW development package
+        run: |
+          curl -fsSL -o sdl2.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-devel-${SDL2_VERSION}-mingw.tar.gz"
+          mkdir -p sdl2 && tar -xzf sdl2.tar.gz -C sdl2 --strip-components=1
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release -DSDL2_ROOT="$(pwd)/sdl2/x86_64-w64-mingw32"
+          cmake --build build
+      - name: Package
+        run: |
+          name="CPCSyntaxError-win64-${GITHUB_REF_NAME//\//-}"
+          mkdir -p "pkg/$name"
+          strip build/cpcse.exe build/cpcse-ctl.exe
+          cp build/cpcse.exe build/cpcse-ctl.exe build/SDL2.dll "pkg/$name/"
+          cp -r roms sounds docs "pkg/$name/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "pkg/$name/"
+          (cd pkg && zip -r -q "../$name.zip" "$name")
+          echo "PKG=$name.zip" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows
+          path: ${{ env.PKG }}
+          retention-days: 14
+
+  linux:
+    name: Linux (x86_64)
+    # The oldest supported runner, so the binary runs on older distributions too.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the build tools and SDL2
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake ninja-build pkg-config libsdl2-dev libgl-dev
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+          cmake --build build
+      - name: Package
+        run: |
+          name="CPCSyntaxError-linux-x86_64-${GITHUB_REF_NAME//\//-}"
+          mkdir -p "pkg/$name"
+          strip build/cpcse build/cpcse-ctl
+          cp build/cpcse build/cpcse-ctl "pkg/$name/"
+          cp -r roms sounds docs "pkg/$name/"
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md "pkg/$name/"
+          printf '%s\n' \
+            "CPCSyntaxError for Linux (x86_64)." \
+            "" \
+            "It needs SDL2 and OpenGL from your distribution, for example:" \
+            "  Debian/Ubuntu: sudo apt install libsdl2-2.0-0 libgl1" \
+            "  Fedora:        sudo dnf install SDL2 mesa-libGL" \
+            "  Arch:          sudo pacman -S sdl2" \
+            "" \
+            "Run ./cpcse from this folder. It finds roms/ and sounds/ beside it." > "pkg/$name/README-LINUX.txt"
+          tar -C pkg -czf "$name.tar.gz" "$name"
+          echo "PKG=$name.tar.gz" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux
+          path: ${{ env.PKG }}
+          retention-days: 14
+
+  macos:
+    name: macOS (universal, Apple silicon and Intel)
+    runs-on: macos-14
+    env:
+      # std::filesystem needs macOS 10.15.
+      MACOSX_DEPLOYMENT_TARGET: "10.15"
+      ARCHS: "arm64;x86_64"
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the build tools
+        run: brew install ninja
+      - name: Build SDL2 as a universal library
+        run: |
+          curl -fsSL -o sdl2.tar.gz "https://github.com/libsdl-org/SDL/releases/download/release-${SDL2_VERSION}/SDL2-${SDL2_VERSION}.tar.gz"
+          mkdir -p sdl2-src && tar -xzf sdl2.tar.gz -C sdl2-src --strip-components=1
+          cmake -S sdl2-src -B sdl2-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="$ARCHS" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DSDL_SHARED=ON -DSDL_STATIC=OFF -DSDL_TEST=OFF -DCMAKE_INSTALL_PREFIX="$PWD/sdl2"
+          cmake --build sdl2-build
+          cmake --install sdl2-build
+      - name: Build
+        run: |
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="$ARCHS" -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
+            -DCMAKE_PREFIX_PATH="$PWD/sdl2"
+          cmake --build build
+      - name: Make the app bundle
+        run: |
+          # The bundle version must be numbers: the tag without its v, or 0.0.0 for a branch.
+          version="0.0.0"
+          case "$GITHUB_REF" in refs/tags/v*) version="${GITHUB_REF_NAME#v}" ;; esac
+          app="pkg/CPCSyntaxError.app"
+          mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
+          cp build/cpcse "$app/Contents/MacOS/cpcse"
+          # SDL_GetBasePath() is Contents/Resources in a bundle: the program finds roms/,
+          # sounds/ and its settings there.
+          cp -r roms sounds "$app/Contents/Resources/"
+          dylib="$(ls sdl2/lib/libSDL2-2.0.0.dylib)"
+          cp "$dylib" "$app/Contents/Frameworks/"
+          install_name_tool -add_rpath "@executable_path/../Frameworks" "$app/Contents/MacOS/cpcse"
+          printf '%s\n' \
+            '<?xml version="1.0" encoding="UTF-8"?>' \
+            '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+            '<plist version="1.0">' \
+            '<dict>' \
+            '  <key>CFBundleName</key><string>CPCSyntaxError</string>' \
+            '  <key>CFBundleDisplayName</key><string>CPCSyntaxError</string>' \
+            '  <key>CFBundleIdentifier</key><string>com.github.wackedman.cpcsyntaxerror</string>' \
+            '  <key>CFBundleExecutable</key><string>cpcse</string>' \
+            '  <key>CFBundlePackageType</key><string>APPL</string>' \
+            "  <key>CFBundleShortVersionString</key><string>${version}</string>" \
+            "  <key>CFBundleVersion</key><string>${version}</string>" \
+            '  <key>LSMinimumSystemVersion</key><string>10.15</string>' \
+            '  <key>NSHighResolutionCapable</key><true/>' \
+            '</dict>' \
+            '</plist>' > "$app/Contents/Info.plist"
+          plutil -lint "$app/Contents/Info.plist"
+          # The changes above break the linker's signature: sign it again, ad hoc. (Without an
+          # Apple Developer ID the app is not notarised; see README-MACOS.txt.)
+          codesign --force --deep -s - "$app"
+          strip -x build/cpcse-ctl
+          cp build/cpcse-ctl pkg/
+          cp README.md LICENSE THIRD_PARTY_NOTICES.md pkg/
+          cp -r docs pkg/
+          printf '%s\n' \
+            "CPCSyntaxError for macOS (Apple silicon and Intel, macOS 10.15 or later)." \
+            "" \
+            "The app is not signed with an Apple Developer ID, so macOS stops it the" \
+            "first time. To open it: right-click CPCSyntaxError.app and select Open," \
+            "then select Open again. Or, in Terminal:" \
+            "  xattr -dr com.apple.quarantine CPCSyntaxError.app" \
+            "" \
+            "Keep the app in a folder you can write to (for example your Applications" \
+            "folder in your home folder): it keeps its settings inside the app." \
+            "cpcse-ctl is the command-line client for the command API." > pkg/README-MACOS.txt
+      - name: Package
+        run: |
+          name="CPCSyntaxError-macos-universal-${GITHUB_REF_NAME//\//-}"
+          mv pkg "$name"
+          ditto -c -k --keepParent "$name" "$name.zip"
+          echo "PKG=$name.zip" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos
+          path: ${{ env.PKG }}
+          retention-days: 14
+
+  release:
+    name: Attach to the release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [windows, linux, macos]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          fail_on_unmatched_files: true

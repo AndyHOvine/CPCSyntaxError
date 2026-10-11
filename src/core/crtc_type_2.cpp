@@ -296,6 +296,12 @@ struct CrtcType2 : CrtcBehaviour {
             : crtc.raster == crtc.maximumRaster();
     }
     int dispenSkew(CRTC6845&) const override { return 0; }   // no SKEW DISP on MC6845 (§13.4)
+    // ACCC §14.4's table (p.134), the R3.NJIT row for this chip, gives each cell as a
+    // range: 0.0625-0.1250 / 1.1250-1.1875 / 2.0625-2.1250 / 3.0625-3.1250 µsec for
+    // R3l = 2 / 3 / 4 / 5. §9.3.1 (p.52): at R3l=2 "On CRTC 2 it lasts 1 or 2 pixel-M2".
+    // 2/16 µsec after the boundary is inside every cell and both pages, the R3l=3 cell
+    // (1/16 later than the others) included.
+    int hsyncFallPhase16(int) const override { return 2; }
     bool frameAddressComesFromVmaPrime() const override { return true; }   // ACCC §13.4
     bool skipsFrameDisplayRestoreDuringHsync() const override { return true; }     // §15.5.2
     bool assignsVmaPrimeBeforeVma() const override { return true; }                // §17.4.3
