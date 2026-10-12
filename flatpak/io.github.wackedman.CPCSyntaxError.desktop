@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=CPCSyntaxError
+Comment=Amstrad CPC, CPC Plus and GX4000 emulator
+Exec=cpcse-flatpak
+Icon=io.github.wackedman.CPCSyntaxError
+Terminal=false
+Categories=Game;Emulator;

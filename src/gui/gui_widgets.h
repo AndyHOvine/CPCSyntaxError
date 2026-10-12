@@ -2,6 +2,8 @@
 #pragma once
 #include <functional>
 #include <initializer_list>
+#include <map>
+#include <ostream>
 #include <string>
 #include <vector>
 
@@ -100,6 +102,19 @@ struct FolderView {
 // or a file to take. True when `typed` named a folder, and `cwd` is now it.
 bool enterTypedFolder(std::string& cwd, const std::string& typed);
 
+// WHERE EACH KIND OF DIALOG WAS LAST. Keyed by what the dialog is for: a file dialog by
+// its first extension (so every disc dialog shares one folder, every tape dialog another),
+// a save dialog by its default name's extension (so "Save snapshot" shares with "Load
+// snapshot"), a folder dialog or one with no extension by its title. A dialog writes its folder here while it is
+// open, so even a cancelled browse is kept; the next open of that kind starts there if the
+// folder still exists, else at the caller's folder. Saved in the .ini as dir.<key>=<path>.
+std::map<std::string, std::string>& rememberedFolders();
+std::string dialogFolderKey(const std::string& title, const std::vector<std::string>& exts);
+// The folder to start in: the remembered one if it still exists, else `fallback`.
+std::string dialogStartFolder(const std::string& key, const std::string& fallback);
+void loadRememberedFolders(const std::map<std::string, std::string>& ini);
+void saveRememberedFolders(std::ostream& out);
+
 struct FileBrowser {
     bool visible = false;
     bool requestOpen = false;      // defer OpenPopup to draw() so it shares the modal's ID scope
@@ -110,6 +125,7 @@ struct FileBrowser {
     std::function<void(const std::string&)> onPick;
     char nameBuf[512] = {0};
     FolderView view;
+    std::string folderKey;         // rememberedFolders() key of this open
     void open(const std::string& t, const std::string& startDir,
               std::vector<std::string> extensions, std::function<void(const std::string&)> cb);
     void openDir(const std::string& t, const std::string& startDir, std::function<void(const std::string&)> cb);
@@ -123,6 +139,7 @@ struct SaveDialog {
     char nameBuf[256] = {0};
     std::function<void(const std::string&)> onSave;
     FolderView view;
+    std::string folderKey;
     void open(const std::string& t, const std::string& startDir, const std::string& defName,
               std::function<void(const std::string&)> cb);
     void draw();

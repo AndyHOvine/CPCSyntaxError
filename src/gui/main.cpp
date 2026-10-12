@@ -67,12 +67,21 @@ using namespace cpcse;
 
 namespace {
 
-std::string iniFilePath() {
+// Where the program keeps what it writes (cpcse.ini, the window layout, the IDE's disc):
+// beside the program, or the folder CPCSE_HOME names (the Flatpak sets it, because the
+// program's own folder is read-only there). Ends with a separator, or is "".
+std::string homeDir() {
+    if (const char* h = std::getenv("CPCSE_HOME"); h && *h) {
+        std::string p = h;
+        return p.back() == '/' || p.back() == '\\' ? p : p + "/";
+    }
     char* b = SDL_GetBasePath();
     std::string p = b ? b : "";
     if (b) SDL_free(b);
-    return p + "cpcse.ini";
+    return p;
 }
+
+std::string iniFilePath() { return homeDir() + "cpcse.ini"; }
 
 // The drive's and the keyboard's recordings (core/machine_sounds.h), beside the program.
 // Beside the program first, then the working directory (a build directory, or a Linux
@@ -83,6 +92,19 @@ void loadMachineSounds() {
     if (b) SDL_free(b);
     for (const std::string& dir : { p + "sounds", std::string("sounds"), p + "../share/cpcsyntaxerror/sounds" })
         if (machineSounds.load(dir) > 0) return;
+}
+
+// "R,G,B" (as --drive/--bias and the .ini keep the guns) into three ints; a missing or
+// short value leaves the rest as they are.
+void parseTriple(const std::string& text, std::array<int, 3>& out) {
+    size_t at = 0;
+    for (size_t k = 0; k < 3 && at <= text.size(); k++) {
+        const size_t comma = text.find(',', at);
+        const std::string part = text.substr(at, comma == std::string::npos ? std::string::npos : comma - at);
+        if (!part.empty()) out[k] = std::atoi(part.c_str());
+        if (comma == std::string::npos) break;
+        at = comma + 1;
+    }
 }
 
 std::map<std::string, std::string> parseIni(const std::string& path) {
@@ -209,7 +231,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape; bool z80Cmos = false, gx4000Ram128 = false; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -232,6 +254,12 @@ int main(int argc, char** argv) {
             else if (a == "--beam") beam = true;
             else if (a == "--hhold" && i + 1 < argc) monitorHHold = std::atoi(argv[++i]);   // H. Hold, Pixel-M2 per line
             else if (a == "--vhold" && i + 1 < argc) monitorVHold = std::atoi(argv[++i]);   // V. Hold, lines
+            else if (a == "--monitor-set" && i + 1 < argc) monitorSet = argv[++i];   // a monitor_model.h id: ctm644, gt65, mm12...
+            else if (a == "--brightness" && i + 1 < argc) monitorKnobs.brightness = std::atoi(argv[++i]);   // the set's front knob, 0..100
+            else if (a == "--contrast" && i + 1 < argc) monitorKnobs.contrast = std::atoi(argv[++i]);       // monochrome sets only, 0..100
+            else if (a == "--intensity" && i + 1 < argc) parseTriple(argv[++i], monitorIntensity);          // R,G,B output intensity, 0..200 %
+            else if (a == "--gx4000-128k") gx4000Ram128 = true;                     // the GX4000 128K RAM mod
+            else if (a == "--z80" && i + 1 < argc) z80Cmos = std::string(argv[++i]) == "cmos";   // nmos (default) or cmos
             else if (a == "--gfx9000") gfx9000 = true;
             else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
             else if (a == "--playcity") playcity = true;                      // a PlayCity
@@ -256,6 +284,10 @@ int main(int argc, char** argv) {
             loadMachineSounds();
             host.gateArrayPart = wantGa;
             host.monitorHHold = monitorHHold; host.monitorVHold = monitorVHold;
+            host.z80Cmos = z80Cmos;
+            host.gx4000Ram128 = gx4000Ram128;
+            host.monitorKnobs = monitorKnobs;
+            host.monitorSetId = monitorSet;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
             if (sf2) host.symbifaceModule = "sf2";
             if (sf3) host.symbifaceModule = "sf3";
@@ -276,6 +308,7 @@ int main(int argc, char** argv) {
             if (!ideFolder.empty()) host.ideFolder = ideFolder;
             int mi = 0; for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == modelId) mi = i;
             if (!host.bootModel(mi, wantRam, wantCrtc)) { std::printf("[shot] %s\n", host.status.c_str()); return 2; }
+            if (monitorIntensity != TubeKnobs().intensity) host.setMonitorIntensity(monitorIntensity);   // for the set now plugged in
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
             if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc);
             host.setBeamRenderer(beam);
@@ -595,11 +628,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     // The window layout (docking, positions, sizes) is ImGui's own ini, beside cpcse.ini.
     static std::string layoutIni;
-    {
-        char* b = SDL_GetBasePath();
-        layoutIni = std::string(b ? b : "") + "cpcse_layout.ini";
-        if (b) SDL_free(b);
-    }
+    layoutIni = homeDir() + "cpcse_layout.ini";
     io.IniFilename = layoutIni.c_str();
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable | ImGuiConfigFlags_ViewportsEnable;
     io.ConfigWindowsMoveFromTitleBarOnly = true;   // dragging inside the screen never moves it
@@ -627,6 +656,22 @@ int main(int argc, char** argv) {
     host.setMonitorMode(gets("monitor", ""));
     host.setMonitorSet(gets("monitorset", ""));
     host.setMonitorHolds(geti("monitorhhold", 0), geti("monitorvhold", 0));
+    host.setZ80Cmos(geti("z80cmos", 0) != 0);
+    host.gx4000Ram128 = geti("gx4000ram128", 0) != 0;     // before the machine boots
+    {
+        TubeKnobs knobs;
+        knobs.brightness = geti("monitorbrightness", MONITOR_BRIGHTNESS_DEFAULT);
+        knobs.contrast = geti("monitorcontrast", MONITOR_CONTRAST_DEFAULT);
+        // each set's output intensity: monitorintensity.<set id>=R,G,B
+        for (const auto& kv : ini) {
+            const std::string prefix = "monitorintensity.";
+            if (kv.first.rfind(prefix, 0) != 0 || kv.first.size() <= prefix.size()) continue;
+            std::array<int, 3> rgb = TubeKnobs().intensity;
+            parseTriple(kv.second, rgb);
+            host.monitorIntensity[kv.first.substr(prefix.size())] = rgb;
+        }
+        host.setMonitorKnobs(knobs);
+    }
     host.audioEnabled   = geti("audio", 1) != 0;
     host.masterVolume   = level("volume", 0.6, 0.0, 1.0);
     host.driveSounds    = geti("drive_sounds", 1) != 0;
@@ -651,11 +696,7 @@ int main(int argc, char** argv) {
     host.serialLan      = geti("seriallan", 0) != 0;
     if (geti("serial", 0) != 0) { host.serialEnabled = true; host.connectSerial(); }   // fitted by applySettings during boot
     host.symbifaceModule = gets("symbiface", "none");
-    {
-        char* b = SDL_GetBasePath();
-        host.ideFolder = gets("idefolder", (std::string(b ? b : "") + "symide").c_str());   // the IDE's disc
-        if (b) SDL_free(b);
-    }
+    host.ideFolder = gets("idefolder", (homeDir() + "symide").c_str());   // the IDE's disc
     host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
     host.v9990Enabled   = geti("v9990", 0) != 0;
@@ -920,7 +961,13 @@ int main(int argc, char** argv) {
             f << "monitorset=" << host.monitorSetId << "\n";
             f << "monitorhhold=" << host.monitorHHold << "\n";
             f << "monitorvhold=" << host.monitorVHold << "\n";
+            f << "monitorbrightness=" << host.monitorKnobs.brightness << "\n";
+            f << "monitorcontrast=" << host.monitorKnobs.contrast << "\n";
+            for (const auto& kv : host.monitorIntensity)
+                f << "monitorintensity." << kv.first << "=" << kv.second[0] << "," << kv.second[1] << "," << kv.second[2] << "\n";
             f << "gatearray=" << host.gateArrayPart << "\n";
+            f << "z80cmos=" << (host.z80Cmos ? 1 : 0) << "\n";
+            f << "gx4000ram128=" << (host.gx4000Ram128 ? 1 : 0) << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";
             f << "drive_sounds=" << (host.driveSounds ? 1 : 0) << "\n";

@@ -142,6 +142,12 @@ private:
     void windowMachine();
     void windowMedia();
     void windowSettings();
+    void openAllSettings();
+    // The settings sections' windows, in windowSettings()'s order.
+    static constexpr const char* SETTINGS_WINDOWS[] = {
+        "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" };
+    // A window to bring to the front as soon as it exists (it may be opened this frame).
+    const char* focusWindowNextFrame = nullptr;
     void windowAbout();
     void sectionRoms(bool asMenu);
 
@@ -221,9 +227,11 @@ private:
     void modelItems(bool asMenu);
     void crtcItems(bool asMenu);
     void gateArrayItems(bool asMenu);
+    void z80Items(bool asMenu);
     void ramItems(bool asMenu);
     void monitorSetItems(bool asMenu);
     void monitorSyncItems();
+    void monitorFrontItems();
 };
 
 } // namespace cpcse

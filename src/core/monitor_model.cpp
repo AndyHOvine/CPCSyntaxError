@@ -22,24 +22,24 @@ static const int ANCHOR_USEC = 12;
 static const MonitorModel MODELS[] = {
     // The reference calibration: the sets that came with a CRTC 0, 1 or 2.
     { "ctm644", "CTM 644 (colour)", "colour", 0,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
     { "ctm640", "CTM 640 (colour)", "colour", 0,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
     // §15.1: the 464+/6128+ set, calibrated a microsecond over so that the ASIC's later
     // HSYNC lands the frame centred.
     { "cm14", "CM14 (464+/6128+ colour)", "colour", 1,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
     // §15.1: "The CRTC 4 does not come with a CM14, but it behaves like a CPC+ at the
     // HSYNC signal. AMSTRAD CALIBRATED THE CTM DELIVERED WITH THIS CPC so that the frame
     // is centered on screen." Same tube as a CTM 644, same microsecond as a CM14.
     { "ctm644-crtc4", "CTM 644 (CRTC 4 calibration)", "colour", 1,
-      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC },
+      VERTICAL_COLOUR, SEPARATOR_COLOUR, ANCHOR_USEC, false },
     // §16.2.2's monochrome sets. A different vertical deflection part, and no colour
     // circuitry at all -- the DIN's R, G and B arrive at one gun.
     { "gt65", "GT 65 (green)", "green", 0,
-      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC },
+      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true },
     { "gt64", "GT 64 (green)", "green", 0,
-      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC },
+      VERTICAL_GREEN, SEPARATOR_GREEN, ANCHOR_USEC, true },
     // Amstrad's Arnold (464 Plus / 6128 Plus) design spec: "The MM12 monochrome incorporates
     // a 12" paper white tube, similar to that used on the PCW9512. The input will be the
     // same as the earlier GTM65 versions" -- the LUM pin, linear 0.8V black to 1.75V peak
@@ -47,7 +47,7 @@ static const MonitorModel MODELS[] = {
     // have, and neither is a 15.1 calibration: it is left at a CTM's, which would put a
     // Plus a character left on it if Amstrad did not calibrate it like the CM14.
     { "mm12", "MM12 (paper white)", "mono", 0,
-      "not named", "not named", ANCHOR_USEC },
+      "not named", "not named", ANCHOR_USEC, true },
 };
 
 const std::vector<const MonitorModel*>& monitorModels() {

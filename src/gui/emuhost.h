@@ -7,13 +7,16 @@
 // model/RAM/CRTC reconfigures the same machine via loadClassicFirmware().
 #pragma once
 #include <SDL.h>
+#include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
 #include <cstdint>
 #include "core/common.h"
 #include "core/cheats.h"
+#include "core/monitor_palette.h"
 
 namespace cpcse {
 
@@ -58,11 +61,23 @@ public:
     // Pixel-M2 per line, V. Hold in lines. 0 is the set as calibrated.
     int monitorHHold = 0;
     int monitorVHold = 0;
+    // THE SET'S FRONT CONTROLS (CpcVideo::setMonitorKnobs): Brightness and Contrast. Its
+    // intensity field is not used here: the output intensity is kept PER SET below.
+    TubeKnobs monitorKnobs;
+    // R, G, B output intensity (0..200 %) for each monitor set, by monitor_model.h id, to
+    // match a real monitor. A set not listed is at 100 %.
+    std::map<std::string, std::array<int, 3>> monitorIntensity;
+    std::string activeMonitorSetId() const;          // the set plugged in now
+    std::array<int, 3> activeMonitorIntensity() const;
+    void setMonitorIntensity(const std::array<int, 3>& rgb);   // for the set plugged in now
     // WHICH GATE ARRAY IS FITTED (src/core/gate_array_model.h): 40007, 40008 or 40010 on a
     // classic machine -- ACCC 9 (p.46) names all three in 464s and 6128s. 0 is the 40010,
     // the part most 6128s carry. On CRTC 3/4 there is no choice: the ASIC (40489/40226)
     // IS the GATE ARRAY, so this is ignored there.
     int gateArrayPart = 0;
+    // WHICH Z80 IS FITTED (Z80::cmos): false is the NMOS Z80A that every CPC shipped with;
+    // true is a CMOS Z84C00 as fitted in some repaired machines.
+    bool z80Cmos = false;
     // ...and an explicit tube override for looking at a colour program in green or grey.
     // "" takes the tube from the set, which is the physical answer.
     std::string monitorMode;
@@ -149,6 +164,11 @@ public:
     std::string diskName[2];
     std::string tapeName;
     std::string cartName;
+    std::string cartPath;                  // the inserted cartridge's file ("" = none)
+    // THE GX4000 128K RAM MOD: a GX4000 has 64K; with the mod it banks 128K like a 6128
+    // (the 6128 Plus's banking), so 128K software runs. Changing it restarts the cartridge.
+    bool gx4000Ram128 = false;
+    void setGx4000Ram128(bool on);
     std::string snapshotName;               // the .SNA last loaded ("" once the machine reboots)
 
     // firmware ROM overrides (empty = auto-find by keyword). Let the user see
@@ -296,6 +316,8 @@ public:
     // Plug a set in, by monitor_model.h id; "" restores the one the machine shipped with.
     void setMonitorSet(const std::string& id);
     void setMonitorHolds(int hHold, int vHold);
+    void setMonitorKnobs(const TubeKnobs& knobs);
+    void setZ80Cmos(bool cmos);
     void applyMonitorSet();
     // Fit a GATE ARRAY part (40007/40008/40010, 0 = the 40010). Live: the chip reads its
     // model on every pixel, so no reset is needed.

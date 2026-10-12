@@ -199,6 +199,7 @@ Select the expansions in the **Expansions** menu or in the Settings window.
    |---|---|
    | Windows (64-bit) | `CPCSyntaxError-win64-<version>.zip` |
    | Linux (x86_64) | `CPCSyntaxError-linux-x86_64-<version>.tar.gz` |
+   | Linux (x86_64), Flatpak | `CPCSyntaxError-linux-x86_64-<version>.flatpak` |
    | macOS 10.15 or later (Apple silicon and Intel) | `CPCSyntaxError-macos-universal-<version>.zip` |
 
 2. Unzip it into a folder.
@@ -206,12 +207,21 @@ Select the expansions in the **Expansions** menu or in the Settings window.
    - Windows: run `cpcse.exe`.
    - Linux: install SDL2 from your distribution (for example `sudo apt install libsdl2-2.0-0`),
      then run `./cpcse`.
+   - Linux, Flatpak: you do not unzip it. Install it, then start CPCSyntaxError from your
+     applications menu. The first install gets the freedesktop runtime from Flathub:
+     ```
+     flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+     flatpak install --user CPCSyntaxError-linux-x86_64-<version>.flatpak
+     ```
+     The Flatpak keeps its settings, screenshots and ROM folder in
+     `~/.var/app/io.github.wackedman.CPCSyntaxError/data/cpcsyntaxerror`. It can open files
+     in your home folder.
    - macOS: the app does not have an Apple Developer ID signature. The first time, right-click
      `CPCSyntaxError.app` and select **Open**, then select **Open** again. Keep the app in a
      folder that you can write to, because it keeps its settings inside the app.
 
 You can also build the program yourself (refer to [Building from source](#building-from-source)).
-GitHub Actions builds the three packages (`.github/workflows/build.yml`).
+GitHub Actions builds the packages (`.github/workflows/build.yml`; the Flatpak from `flatpak/`).
 
 The firmware ROMs of the CPC 464 and CPC 6128 and the system cartridge of the CPC Plus and
 GX4000 are included in `roms/`. Amstrad gave permission to distribute their copyrighted

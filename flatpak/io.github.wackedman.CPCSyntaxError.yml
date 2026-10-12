@@ -1,0 +1,43 @@
+# The Flatpak of CPCSyntaxError. .github/workflows/build.yml builds it into a bundle
+# (CPCSyntaxError-linux-x86_64-<version>.flatpak). To build it yourself, from the top folder:
+#   flatpak-builder --user --install --force-clean build-flatpak flatpak/io.github.wackedman.CPCSyntaxError.yml
+#
+# The program's folder (/app) is read-only in a Flatpak. cpcse-flatpak.sh starts the program
+# in a folder it can write, and copies the shipped ROMs there on the first start.
+app-id: io.github.wackedman.CPCSyntaxError
+runtime: org.freedesktop.Platform
+runtime-version: '24.08'
+sdk: org.freedesktop.Sdk
+command: cpcse-flatpak
+finish-args:
+  - --share=ipc
+  - --socket=x11
+  - --socket=pulseaudio
+  # OpenGL (the GPU) and joysticks
+  - --device=all
+  # the M4 Board's WiFi, the serial line over TCP, the debug servers
+  - --share=network
+  # discs, tapes, cartridges and snapshots in your own folders
+  - --filesystem=home
+modules:
+  - name: cpcsyntaxerror
+    buildsystem: simple
+    build-commands:
+      - cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release
+      - cmake --build build
+      - install -Dm755 build/cpcse /app/bin/cpcse
+      - install -Dm755 build/cpcse-ctl /app/bin/cpcse-ctl
+      - install -Dm755 flatpak/cpcse-flatpak.sh /app/bin/cpcse-flatpak
+      - mkdir -p /app/share/cpcsyntaxerror
+      - cp -r roms sounds docs /app/share/cpcsyntaxerror/
+      - install -Dm644 flatpak/io.github.wackedman.CPCSyntaxError.desktop /app/share/applications/io.github.wackedman.CPCSyntaxError.desktop
+      - install -Dm644 flatpak/io.github.wackedman.CPCSyntaxError.png /app/share/icons/hicolor/256x256/apps/io.github.wackedman.CPCSyntaxError.png
+      - install -Dm644 -t /app/share/doc/cpcsyntaxerror README.md LICENSE THIRD_PARTY_NOTICES.md
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - build
+          - build-flatpak
+          - .flatpak-builder
+          - bin

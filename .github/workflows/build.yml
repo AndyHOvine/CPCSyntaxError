@@ -1,4 +1,4 @@
-# Builds CPCSyntaxError for Windows, Linux and macOS.
+# Builds CPCSyntaxError for Windows, Linux (a tar.gz and a Flatpak) and macOS.
 #
 # - A push to main, and a manual run (Actions > Build > Run workflow), builds all three and
 #   keeps the packages as workflow artifacts for 14 days.
@@ -105,6 +105,25 @@ jobs:
           path: ${{ env.PKG }}
           retention-days: 14
 
+  flatpak:
+    name: Linux (Flatpak, x86_64)
+    runs-on: ubuntu-latest
+    # flatpak-builder needs the freedesktop SDK; this image has it, and the container must be
+    # privileged for the build sandbox.
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - name: Bundle name
+        run: echo "BUNDLE=CPCSyntaxError-linux-x86_64-$(echo "$GITHUB_REF_NAME" | tr '/' '-').flatpak" >> "$GITHUB_ENV"
+      # Builds flatpak/io.github.wackedman.CPCSyntaxError.yml and keeps the bundle as an artifact.
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: ${{ env.BUNDLE }}
+          manifest-path: flatpak/io.github.wackedman.CPCSyntaxError.yml
+          cache-key: flatpak-builder-${{ github.sha }}
+
   macos:
     name: macOS (universal, Apple silicon and Intel)
     runs-on: macos-14
@@ -195,7 +214,7 @@ jobs:
   release:
     name: Attach to the release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, linux, macos]
+    needs: [windows, linux, flatpak, macos]
     runs-on: ubuntu-latest
     permissions:
       contents: write

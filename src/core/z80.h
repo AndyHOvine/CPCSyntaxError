@@ -71,6 +71,17 @@ public:
     bool halted = false;
     int eiDelay = 0;
 
+    // THE CHIP PROCESS. Every CPC shipped with an NMOS Z80A. A CMOS Z80 (Zilog Z84C00), as
+    // fitted in some repaired machines, differs in two things a program can see:
+    //   - OUT (C),0 (ED 71) writes &FF, not 0 (Simon Cooke, 1996; MAME's Z80 notes). Most
+    //     CPC music players use it to set the PSG lines to "inactive" on PPI port C, so on
+    //     a CMOS Z80 they set "latch address" instead (and the tape motor relay).
+    //   - LD A,I / LD A,R do not have the NMOS fault: an interrupt taken straight after
+    //     leaves P/V as the instruction set it (MAME's Z80 notes).
+    // SCF/CCF keep the Zilog (Q ^ F) | A rule: no source shows a Zilog CMOS difference.
+    // Not part of reset(): it is the fitted chip, not a register.
+    bool cmos = false;
+
     // pendingInterrupt: -1 = none. Holds the vector byte otherwise.
     int pendingInterrupt = -1;
     bool pendingNmi = false;

@@ -126,8 +126,8 @@ int Z80::pop() {
 int Z80::interrupt() {
     // The NMOS Z80's own fault (Zilog's Z80 CPU User Manual, LD A,I / LD A,R): an
     // interrupt taken straight after either reads IFF2 as it is being reset, so the P/V
-    // flag the instruction left is 0.
-    if (lastWasLdAIR) f &= ~PV;
+    // flag the instruction left is 0. The CMOS Z80 does not have it.
+    if (lastWasLdAIR && !cmos) f &= ~PV;
     if (halted) pc = (pc + 1) & 0xffff;
     halted = false; iff1 = iff2 = false;
     r = (r & 0x80) | ((r + 1) & 0x7f);
@@ -292,7 +292,7 @@ int Z80::executeCB(int opcode, int* index, int address) {
 int Z80::executeED(int opcode) {
     int rr = opcode >> 4 & 3;
     if ((opcode & 0xc7) == 0x40) { wz = (bc() + 1) & 0xffff; int value = portRead(bc(), "in-c"); if ((opcode >> 3 & 7) != 6) setReg(opcode >> 3 & 7, value); f = (f & C) | szp(value); flagsWritten = true; return 12; }
-    if ((opcode & 0xc7) == 0x41) { wz = (bc() + 1) & 0xffff; portWrite(bc(), (opcode >> 3 & 7) == 6 ? 0 : reg(opcode >> 3 & 7), "out-c"); return 12; }
+    if ((opcode & 0xc7) == 0x41) { wz = (bc() + 1) & 0xffff; portWrite(bc(), (opcode >> 3 & 7) == 6 ? (cmos ? 0xff : 0) : reg(opcode >> 3 & 7), "out-c"); return 12; }   // OUT (C),0: &FF on CMOS
     if ((opcode & 0xcf) == 0x42) { setHl(adc16(hl(), pair(rr), true)); return 15; }
     if ((opcode & 0xcf) == 0x4a) { setHl(adc16(hl(), pair(rr))); return 15; }
     if ((opcode & 0xcf) == 0x43) { int address = fetchWord(); writeWord(address, pair(rr)); wz = (address + 1) & 0xffff; return 20; }

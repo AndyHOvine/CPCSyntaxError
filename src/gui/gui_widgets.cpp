@@ -256,20 +256,44 @@ bool FolderView::draw(std::string& cwd, const std::vector<std::string>& exts, co
     return picked;
 }
 
+std::map<std::string, std::string>& rememberedFolders() {
+    static std::map<std::string, std::string> folders;
+    return folders;
+}
+std::string dialogFolderKey(const std::string& title, const std::vector<std::string>& exts) {
+    std::string key = exts.empty() ? title : exts.front();
+    // an .ini key: no '=', no spaces, lower case
+    for (char& ch : key) ch = (ch == '=' || ch == ' ' || ch == '\t') ? '_' : (char)std::tolower((unsigned char)ch);
+    return key;
+}
+std::string dialogStartFolder(const std::string& key, const std::string& fallback) {
+    std::error_code ec;
+    auto it = rememberedFolders().find(key);
+    const std::string& want = it != rememberedFolders().end() && std::filesystem::is_directory(it->second, ec) ? it->second : fallback;
+    return std::filesystem::exists(want, ec) ? std::filesystem::absolute(want, ec).string()
+                                             : std::filesystem::current_path(ec).string();
+}
+void loadRememberedFolders(const std::map<std::string, std::string>& ini) {
+    for (const auto& kv : ini)
+        if (kv.first.rfind("dir.", 0) == 0 && kv.first.size() > 4 && !kv.second.empty())
+            rememberedFolders()[kv.first.substr(4)] = kv.second;
+}
+void saveRememberedFolders(std::ostream& out) {
+    for (const auto& kv : rememberedFolders()) out << "dir." << kv.first << "=" << kv.second << "\n";
+}
+
 void FileBrowser::open(const std::string& t, const std::string& startDir,
                        std::vector<std::string> extensions, std::function<void(const std::string&)> cb) {
     title = t; exts = std::move(extensions); onPick = std::move(cb); pickDir = false;
-    std::error_code ec;
-    cwd = std::filesystem::exists(startDir, ec) ? std::filesystem::absolute(startDir, ec).string()
-                                                : std::filesystem::current_path(ec).string();
+    folderKey = dialogFolderKey(title, exts);
+    cwd = dialogStartFolder(folderKey, startDir);
     nameBuf[0] = 0; visible = true; requestOpen = true;
     view.relist();                      // listed afresh: these extensions
 }
 void FileBrowser::openDir(const std::string& t, const std::string& startDir, std::function<void(const std::string&)> cb) {
     title = t; exts.clear(); onPick = std::move(cb); pickDir = true;
-    std::error_code ec;
-    cwd = std::filesystem::exists(startDir, ec) ? std::filesystem::absolute(startDir, ec).string()
-                                                : std::filesystem::current_path(ec).string();
+    folderKey = dialogFolderKey(title, exts);
+    cwd = dialogStartFolder(folderKey, startDir);
     nameBuf[0] = 0; visible = true; requestOpen = true;
     view.relist();
 }
@@ -281,7 +305,9 @@ void FileBrowser::draw() {
     namespace fs = std::filesystem;
     std::string clicked;
     bool twice = false;
-    if (view.draw(cwd, exts, nameBuf, ImGui::GetFrameHeightWithSpacing() * 2, clicked, twice)) {
+    const bool listed = view.draw(cwd, exts, nameBuf, ImGui::GetFrameHeightWithSpacing() * 2, clicked, twice);
+    rememberedFolders()[folderKey] = cwd;          // where this kind of dialog is now
+    if (listed) {
         std::snprintf(nameBuf, sizeof(nameBuf), "%s", clicked.c_str());
         if (twice && !pickDir) {
             if (onPick) onPick((fs::path(cwd) / clicked).string());
@@ -313,9 +339,10 @@ void FileBrowser::draw() {
 
 void SaveDialog::open(const std::string& t, const std::string& startDir, const std::string& defName,
                       std::function<void(const std::string&)> cb) {
-    title = t; std::error_code ec;
-    dir = std::filesystem::exists(startDir, ec) ? std::filesystem::absolute(startDir, ec).string()
-                                                : std::filesystem::current_path(ec).string();
+    title = t;
+    const std::string ext = std::filesystem::path(defName).extension().string();
+    folderKey = dialogFolderKey(title, ext.empty() ? std::vector<std::string>{} : std::vector<std::string>{ ext });
+    dir = dialogStartFolder(folderKey, startDir);
     std::snprintf(nameBuf, sizeof(nameBuf), "%s", defName.c_str());
     onSave = std::move(cb); visible = true; requestOpen = true;
     view.relist();
@@ -331,6 +358,7 @@ void SaveDialog::draw() {
     bool twice = false;
     if (view.draw(dir, {}, nameBuf, ImGui::GetFrameHeightWithSpacing() * 2, clicked, twice))
         std::snprintf(nameBuf, sizeof(nameBuf), "%s", clicked.c_str());
+    rememberedFolders()[folderKey] = dir;          // where this kind of dialog is now
     {   // the name field takes what its label and the two buttons leave
         const ImGuiStyle& s = ImGui::GetStyle();
         ImGui::SetNextItemWidth(-(ImGui::CalcTextSize("File name").x + s.ItemInnerSpacing.x + 56 * 2 + s.ItemSpacing.x * 2 + 2));

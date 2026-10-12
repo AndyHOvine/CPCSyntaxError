@@ -488,10 +488,23 @@ void CpcVideo::setMonitorMode(const std::string& mode) {
         ? normaliseMonitorMode(monitorSet ? monitorSet->phosphor : MONITOR_MODE_COLOUR)
         : monitorTint;
     monitorColourTube = monitorMode == MONITOR_MODE_COLOUR;
+    rebuildTube();
 }
 void CpcVideo::setMonitorModel(const MonitorModel* model) {
     monitorSet = model;
     setMonitorMode(monitorTint);      // re-take the tube from the new set
+}
+void CpcVideo::setMonitorKnobs(const TubeKnobs& knobs) {
+    monitorKnobs = knobs;
+    rebuildTube();
+}
+// A set without a Contrast control (the colour sets) runs at full contrast, whatever the
+// knob stored for the sets that have one says.
+void CpcVideo::rebuildTube() {
+    const bool contrastFitted = monitorSet && monitorSet->hasContrast;
+    TubeKnobs knobs = monitorKnobs;
+    if (!contrastFitted) knobs.contrast = MONITOR_CONTRAST_DEFAULT;
+    tube.configure(monitorMode, knobs);
 }
 // ACCC §15.1 (p.146): the set's own horizontal calibration, as Pixel-M2 of back porch.
 // A CM14 (and the CTM Amstrad calibrated for the CRTC 4 machine) sits a microsecond
@@ -509,8 +522,8 @@ bool CpcVideo::lightgunRgbBright(int rgb) {
 }
 uint32_t CpcVideo::packedColor(int rgb) { return (uint32_t)(0xff000000u | (rgb & 0xff) << 16 | (rgb & 0xff00) | ((unsigned)rgb >> 16)); }
 int CpcVideo::applyMonitor(int rgb) {
-    // monitorTransformRgb's own colour case, without normalising the mode name per pixel.
-    return monitorColourTube ? (rgb & 0xffffff) : monitorTransformRgb(rgb, monitorMode);
+    // The tube and its knobs, as tables built when a setting changed (rebuildTube).
+    return tube.apply(rgb);
 }
 int CpcVideo::penColor(int pen) {
     // The GATE ARRAY says which RGB, the tube says what that looks like -- in that order,

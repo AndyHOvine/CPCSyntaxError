@@ -52,7 +52,13 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Cheats", "win_cheats", false, false },
         { "CSL scripts", "win_csl", false, false },
         { "Printer", "win_printer", false, false },
-        { "Settings", "win_settings", false, false },
+        // The settings, one window per section: they open docked together as tabs, and a
+        // tab can be dragged out to float or dock anywhere.
+        { "Video settings", "win_set_video", false, false },
+        { "Audio settings", "win_set_audio", false, false },
+        { "Input settings", "win_set_input", false, false },
+        { "Expansions", "win_set_expansions", false, false },
+        { "External debugging", "win_set_dev", false, false },
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
@@ -90,6 +96,7 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
     assembler->loadSettings(ini);
     dev->loadSettings(ini);
+    loadRememberedFolders(ini);
 }
 
 void GuiShell::saveSettings(std::ostream& out) const {
@@ -101,6 +108,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
     dev->saveSettings(out);
+    saveRememberedFolders(out);
 }
 
 // The front end's look: Dear ImGui's dark theme, square windows, the orange accent --
@@ -170,6 +178,10 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     }
     placeNewlyOpened(dockId);
     ImGui::DockSpaceOverViewport(dockId, vp);
+    if (focusWindowNextFrame && ImGui::FindWindowByName(focusWindowNextFrame)) {
+        ImGui::SetWindowFocus(focusWindowNextFrame);
+        focusWindowNextFrame = nullptr;
+    }
 
     windowScreen(info);
     windowMachine();
@@ -228,7 +240,8 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
         { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Settings", "Cheats" }, ImGuiDir_Down, 0.42f },
+        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Cheats",
+            "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
     };
     auto placed = [&](const char* t) { return std::find(placedThisSession.begin(), placedThisSession.end(), t) != placedThisSession.end(); };
     bool changed = false;
@@ -392,6 +405,18 @@ void GuiShell::modelItems(bool asMenu) {
 }
 void GuiShell::ramItems(bool asMenu) {
     int cur = host.currentModel;
+    // A GX4000: 64K as sold, or 128K with the RAM mod (it then banks like a 6128).
+    if (cur >= 0 && !host.models[(size_t)cur].computer) {
+        const char* items[2] = { "64 KB  (as sold)", "128 KB  (RAM mod)" };
+        for (int k = 0; k < 2; k++) {
+            const bool sel = host.gx4000Ram128 == (k == 1);
+            if (asMenu ? ImGui::MenuItem(items[k], nullptr, sel) : ImGui::Selectable(items[k], sel))
+                if (!sel) host.setGx4000Ram128(k == 1);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(k ? "The 128K RAM mod: 128K software runs, as on a 6128 Plus.\nThe cartridge restarts." : "The GX4000 as Amstrad sold it.");
+        }
+        return;
+    }
     for (int r : RAM_SIZES) {
         std::string l = std::to_string(r) + " KB";
         if (r >= 576) {   // the expansion board's own size, which is how boards were sold
@@ -442,6 +467,23 @@ void GuiShell::gateArrayItems(bool asMenu) {
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", g.notes);
     }
 }
+// The Z80's chip process (Z80::cmos). Every CPC shipped with the NMOS part.
+void GuiShell::z80Items(bool asMenu) {
+    struct Z80Part { bool cmos; const char* label; const char* notes; };
+    static const Z80Part parts[] = {
+        { false, "NMOS Z80A  (every CPC as shipped)", "The part every CPC, Plus and GX4000 shipped with." },
+        { true,  "CMOS Z84C00  (a replacement part)",
+          "OUT (C),0 writes &FF, not 0. Most music players use it to set the PSG to\n"
+          "inactive, so on this part they latch an address instead: music goes wrong and\n"
+          "the tape motor relay clicks, as on a real CPC with a CMOS Z80.\n"
+          "LD A,I / LD A,R: no P/V fault when an interrupt follows." },
+    };
+    for (const auto& p : parts) {
+        if (asMenu ? ImGui::MenuItem(p.label, nullptr, host.z80Cmos == p.cmos) : ImGui::Selectable(p.label, host.z80Cmos == p.cmos))
+            host.setZ80Cmos(p.cmos);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", p.notes);
+    }
+}
 void GuiShell::monitorSetItems(bool asMenu) {
     const auto& sets = monitorModels();
     const MonitorModel* current = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
@@ -470,6 +512,50 @@ void GuiShell::monitorSyncItems() {
                           "0 is the set as calibrated. Turned too far, it no longer\n"
                           "holds the CPC's 312 lines and the picture rolls.");
     if (ImGui::SmallButton("Centre both")) host.setMonitorHolds(0, 0);
+}
+// The front controls: Brightness on every set, Contrast only where the set has it (the
+// monochrome sets, per the service manuals' parts lists).
+void GuiShell::monitorFrontItems() {
+    const MonitorModel* set = host.monitorSetId.empty() ? (host.emu ? host.emu->shippedMonitorModel() : nullptr)
+                                                        : monitorModelFor(host.monitorSetId);
+    TubeKnobs k = host.monitorKnobs;
+    bool changed = false;
+    ImGui::SetNextItemWidth(160);
+    changed |= ImGui::SliderInt("Brightness", &k.brightness, 0, 100);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The knob on the front of the set: it moves the black level.\n"
+                          "50 is the set as calibrated. At 100 a black screen just\n"
+                          "glows (CM14 manual, CUT OFF); lower darkens the dark colours.");
+    if (set && set->hasContrast) {
+        ImGui::SetNextItemWidth(160);
+        changed |= ImGui::SliderInt("Contrast", &k.contrast, 0, 100);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The monochrome sets' second knob: the picture's gain.\n"
+                              "100 is full. With brightness and contrast both at 0 the\n"
+                              "picture can still be seen slightly (MM12 manual, SUB BRIGHT).");
+    }
+    if (changed) host.setMonitorKnobs(k);
+    if (ImGui::SmallButton("Reset knobs")) host.setMonitorKnobs(TubeKnobs());
+    // The output's colour, per set: a trim on the light of each channel to match a real
+    // monitor. Not a part of the set, and the tube model is not touched.
+    const MonitorModel* active = monitorModelFor(host.activeMonitorSetId());
+    char heading[96];
+    std::snprintf(heading, sizeof heading, "Output colour (%s)###outputcolour", active ? active->name : "this set");
+    if (ImGui::TreeNode(heading)) {
+        std::array<int, 3> rgb = host.activeMonitorIntensity();
+        bool moved = false;
+        static const char* names[3] = { "Red", "Green", "Blue" };
+        for (size_t c = 0; c < 3; c++) {
+            ImGui::SetNextItemWidth(160);
+            moved |= ImGui::SliderInt(names[c], &rgb[c], 0, 200, "%d %%");
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("This channel's intensity on the output, kept for this\n"
+                                  "monitor set only. 100 %% is unchanged. Ctrl+click to type.");
+        }
+        if (moved) host.setMonitorIntensity(rgb);
+        if (ImGui::SmallButton("Reset colour")) host.setMonitorIntensity(TubeKnobs().intensity);
+        ImGui::TreePop();
+    }
 }
 
 // ============================================================== settings sections
@@ -565,12 +651,7 @@ void GuiShell::menuMachine() {
     ImGui::TextDisabled("Video chips");
     if (ImGui::BeginMenu("CRTC", host.currentModel >= 0)) { crtcItems(true); ImGui::EndMenu(); }
     if (ImGui::BeginMenu("Gate Array", host.currentModel >= 0)) { gateArrayItems(true); ImGui::EndMenu(); }
-    if (ImGui::BeginMenu("Monitor")) {
-        monitorSetItems(true);
-        ImGui::Separator();
-        monitorSyncItems();
-        ImGui::EndMenu();
-    }
+    if (ImGui::BeginMenu("Z80")) { z80Items(true); ImGui::EndMenu(); }
     ImGui::Separator();
     if (ImGui::BeginMenu("ROMs")) { sectionRoms(true); ImGui::EndMenu(); }
     ImGui::Separator();
@@ -633,6 +714,13 @@ void GuiShell::menuMedia() {
 void GuiShell::menuSection(const char* title, void (GuiShell::*section)(bool)) {
     if (!ImGui::BeginMenu(title)) return;
     (this->*section)(true);
+    // The same section as a window of its own ("Video" -> "Video settings").
+    for (const char* w : SETTINGS_WINDOWS) {
+        if (std::string(w).rfind(title, 0) != 0) continue;
+        ImGui::Separator();
+        if (ImGui::MenuItem("Open as a window")) { panelOpen(w) = true; focusWindowNextFrame = w; }
+        break;
+    }
     ImGui::EndMenu();
 }
 
@@ -678,7 +766,13 @@ void GuiShell::menuWindow() {
     if (!ImGui::BeginMenu("Window")) return;
     ImGui::MenuItem("Screen", nullptr, &panelOpen("Screen"));
     ImGui::Separator();
-    for (const char* w : { "Machine", "Media", "Settings" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Machine", "Media" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    if (ImGui::BeginMenu("Settings")) {
+        if (ImGui::MenuItem("All settings")) openAllSettings();
+        ImGui::Separator();
+        for (const char* w : SETTINGS_WINDOWS) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+        ImGui::EndMenu();
+    }
     ImGui::Separator();
     for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
@@ -781,12 +875,8 @@ void GuiShell::windowMachine() {
                 for (const auto& g : GA_PARTS) if (!asic && g.part == fitted) gaLabel = g.label;
                 if (ImGui::BeginCombo("##gatearray", gaLabel)) { gateArrayItems(false); ImGui::EndCombo(); }
             }
-            ImGui::TextUnformatted("Monitor"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
-            {
-                const MonitorModel* set = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
-                if (ImGui::BeginCombo("##machinemonitor", set ? set->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
-                monitorSyncItems();
-            }
+            ImGui::TextUnformatted("Z80"); ImGui::SameLine(labelW); ImGui::SetNextItemWidth(-1);
+            if (ImGui::BeginCombo("##z80", host.z80Cmos ? "CMOS Z84C00  (a replacement part)" : "NMOS Z80A  (every CPC as shipped)")) { z80Items(false); ImGui::EndCombo(); }
             ImGui::EndDisabled();
         }
         if (ImGui::CollapsingHeader("Control", ImGuiTreeNodeFlags_DefaultOpen)) {
@@ -871,17 +961,27 @@ void GuiShell::windowMedia() {
     ImGui::End();
 }
 
+// The settings: one window per section (SETTINGS_WINDOWS), each dockable on its own.
 void GuiShell::windowSettings() {
-    if (!panelOpen("Settings")) return;
-    if (ImGui::Begin("Settings", &panelOpen("Settings"))) {
-        WrapText wrapText;                     // text wraps at the window's edge
-        if (ImGui::CollapsingHeader("Video", ImGuiTreeNodeFlags_DefaultOpen)) { ImGui::PushID("video"); sectionVideo(false); ImGui::PopID(); }
-        if (ImGui::CollapsingHeader("Audio")) { ImGui::PushID("audio"); sectionAudio(false); ImGui::PopID(); }
-        if (ImGui::CollapsingHeader("Input")) { ImGui::PushID("input"); sectionInput(false); ImGui::PopID(); }
-        if (ImGui::CollapsingHeader("Expansions")) { ImGui::PushID("exp"); sectionExpansions(false); ImGui::PopID(); }
-        if (ImGui::CollapsingHeader("External debugging")) { ImGui::PushID("dev"); sectionDevelopment(false); ImGui::PopID(); }
+    static void (GuiShell::* const sections[])(bool) = {
+        &GuiShell::sectionVideo, &GuiShell::sectionAudio, &GuiShell::sectionInput,
+        &GuiShell::sectionExpansions, &GuiShell::sectionDevelopment };
+    static_assert(sizeof(sections) / sizeof(sections[0]) == sizeof(SETTINGS_WINDOWS) / sizeof(SETTINGS_WINDOWS[0]),
+                  "one section per settings window");
+    for (size_t i = 0; i < sizeof(sections) / sizeof(sections[0]); i++) {
+        const char* title = SETTINGS_WINDOWS[i];
+        if (!panelOpen(title)) continue;
+        if (ImGui::Begin(title, &panelOpen(title))) {
+            WrapText wrapText;                 // text wraps at the window's edge
+            (this->*sections[i])(false);
+        }
+        ImGui::End();
     }
-    ImGui::End();
+}
+// Every settings window, docked together as tabs (placeNewlyOpened), the first in front.
+void GuiShell::openAllSettings() {
+    for (const char* w : SETTINGS_WINDOWS) panelOpen(w) = true;
+    focusWindowNextFrame = SETTINGS_WINDOWS[0];
 }
 
 void GuiShell::windowAbout() {

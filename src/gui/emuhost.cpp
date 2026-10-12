@@ -224,7 +224,8 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         try { cart = parseCartridge(data); }
         catch (const std::exception& ex) { status = std::string("Invalid system cartridge: ") + ex.what(); return false; }
         if (cart.banks.empty()) { status = "Invalid system cartridge."; return false; }
-        ramKiB = ram > 0 ? ram : m.defaultRam;
+        // A GX4000 has 64K; with the 128K RAM mod (gx4000Ram128) it banks like a 6128.
+        ramKiB = !m.computer ? (gx4000Ram128 ? 128 : 64) : ram > 0 ? ram : m.defaultRam;
         crtcType = 3;
         GX4000::LoadCartridgeOptions opt;
         opt.plusComputer = m.computer;     // GX4000 = console (no keyboard)
@@ -236,7 +237,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         applySettings();
         applyMonitorSet();                 // a Plus came with a CM14 (ACCC 15.1)
         currentModel = index;
-        cartName.clear();
+        cartName.clear(); cartPath.clear();
         snapshotName.clear();
         paused = false;
         status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, " + (m.computer ? "Plus/ASIC" : "GX4000 console") + ")";
@@ -281,7 +282,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     // CM14, a CRTC 4 a CTM calibrated like one), so re-take it unless one was chosen.
     applyMonitorSet();
     currentModel = index;
-    cartName.clear();
+    cartName.clear(); cartPath.clear();
     snapshotName.clear();
     paused = false;
     status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, CRTC " + std::to_string(crtcType) + ")";
@@ -290,6 +291,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
 
 void EmuHost::applySettings() {
     if (!emu) return;
+    if (emu->cpu) emu->cpu->cmos = z80Cmos;
     if (emu->keyboard) {
         emu->keyboard->setJoystickEnabled(joystickEnabled);
         emu->keyboard->setRegion(keyboardRegion);
@@ -814,9 +816,13 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     ModelProfile& m = models[currentModel >= 0 ? currentModel : 0];
     GX4000::LoadCartridgeOptions opt;
     opt.plusComputer = m.computer;
-    opt.ram128 = m.computer && ramKiB >= 128;
-    opt.ramKiB = m.computer ? (ramKiB >= 128 ? 128 : 64) : 64;
+    // A Plus computer keeps its RAM; a GX4000 has 64K, or 128K with the RAM mod.
+    const bool ram128 = m.computer ? ramKiB >= 128 : gx4000Ram128;
+    opt.ram128 = ram128;
+    opt.ramKiB = ram128 ? 128 : 64;
+    if (!m.computer) ramKiB = opt.ramKiB;
     emu->loadCartridge(cart, opt);
+    cartPath = path;
     emu->hasFdc = m.computer && m.amsdos;
     applyAudioRate();
     applySettings();
@@ -1119,6 +1125,13 @@ bool EmuHost::loadSnapshot(const std::string& path) {
     return true;
 }
 
+void EmuHost::setGx4000Ram128(bool on) {
+    gx4000Ram128 = on;
+    if (currentModel < 0 || models[(size_t)currentModel].computer) return;   // takes effect on a GX4000
+    if (!cartPath.empty()) loadCartridgeFile(cartPath);                     // the same cartridge, restarted
+    else bootModel(currentModel, -1, crtcType);
+}
+
 bool EmuHost::ejectCartridge() {
     if (cartName.empty() || currentModel < 0) return false;
     const std::string name = cartName;
@@ -1314,6 +1327,41 @@ void EmuHost::setMonitorSet(const std::string& id) {
     applyMonitorSet();
 }
 
+// The chip swap takes effect at the next instruction; a real swap needs the power off, but
+// nothing in the Z80's state depends on the process, so no reset is forced.
+void EmuHost::setZ80Cmos(bool cmos) {
+    z80Cmos = cmos;
+    if (emu && emu->cpu) emu->cpu->cmos = z80Cmos;
+}
+
+// The front knobs, with the output intensity of the set plugged in now.
+static TubeKnobs knobsForVideo(const TubeKnobs& front, const std::array<int, 3>& intensity) {
+    TubeKnobs k = front;
+    k.intensity = intensity;
+    return k;
+}
+void EmuHost::setMonitorKnobs(const TubeKnobs& knobs) {
+    monitorKnobs = knobs;
+    monitorKnobs.brightness = std::max(0, std::min(100, knobs.brightness));
+    monitorKnobs.contrast = std::max(0, std::min(100, knobs.contrast));
+    if (video) video->setMonitorKnobs(knobsForVideo(monitorKnobs, activeMonitorIntensity()));
+}
+std::string EmuHost::activeMonitorSetId() const {
+    if (emu && emu->monitorRenderer && emu->monitorRenderer->model) return emu->monitorRenderer->model->id;
+    return monitorSetId.empty() ? std::string("ctm644") : monitorSetId;
+}
+std::array<int, 3> EmuHost::activeMonitorIntensity() const {
+    auto it = monitorIntensity.find(activeMonitorSetId());
+    return it != monitorIntensity.end() ? it->second : TubeKnobs().intensity;
+}
+void EmuHost::setMonitorIntensity(const std::array<int, 3>& rgb) {
+    std::array<int, 3> v;
+    for (size_t k = 0; k < 3; k++) v[k] = std::max(0, std::min(200, rgb[k]));
+    if (v == TubeKnobs().intensity) monitorIntensity.erase(activeMonitorSetId());
+    else monitorIntensity[activeMonitorSetId()] = v;
+    if (video) video->setMonitorKnobs(knobsForVideo(monitorKnobs, activeMonitorIntensity()));
+}
+
 void EmuHost::setMonitorHolds(int hHold, int vHold) {
     monitorHHold = hHold;
     monitorVHold = vHold;
@@ -1329,7 +1377,11 @@ void EmuHost::applyMonitorSet() {
     // No set chosen is nullptr, not the shipped set: the core then re-takes the machine's
     // own at every reset, so a later model change gets its own monitor.
     emu->setMonitorModel(monitorSetId.empty() ? nullptr : monitorModelFor(monitorSetId));
-    if (video) { video->setMonitorModel(emu->monitorRenderer->model); video->setMonitorMode(monitorMode); }
+    if (video) {
+        video->setMonitorModel(emu->monitorRenderer->model);
+        video->setMonitorMode(monitorMode);
+        video->setMonitorKnobs(knobsForVideo(monitorKnobs, activeMonitorIntensity()));   // this set's intensity
+    }
 }
 
 } // namespace cpcse

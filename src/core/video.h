@@ -4,6 +4,7 @@
 #pragma once
 #include "common.h"
 #include "raster.h"
+#include "monitor_palette.h"
 
 namespace cpcse {
 
@@ -82,6 +83,14 @@ public:
     // ...and whether it is the colour tube, asked for every pixel drawn: a colour tube
     // passes the RGB through untouched. Kept by setMonitorMode, the one writer.
     bool monitorColourTube = true;
+    // The set's controls (monitor_palette.h): front Brightness and Contrast, and the service
+    // Drive and Bias of each gun. Contrast acts only on a set that has the control
+    // (MonitorModel::hasContrast).
+    TubeKnobs monitorKnobs;
+    // The tube with those knobs, as tables; rebuilt by rebuildTube() on any change.
+    TubeTransform tube;
+    void rebuildTube();
+    void setMonitorKnobs(const TubeKnobs& knobs);
 
     // transient render state
     XY origin;

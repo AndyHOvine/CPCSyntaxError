@@ -67,6 +67,10 @@ struct MonitorModel {
     // measured CTMs; the green sets were not measured, so they carry the same figure
     // rather than a made-up one.
     int vsyncAnchorMinimumMicroseconds;
+    // The front controls the service manuals list: every set has Brightness; only the
+    // monochrome sets have Contrast (GT 64/65 parts lists: "Contrast Pot."; MM12: "bright
+    // and contrast controls"). The CTM 640/644 and CM14 lists have a brightness control only.
+    bool hasContrast;
 };
 
 // The sets, by id. "ctm644" is the default and the reference calibration.

@@ -121,11 +121,29 @@ static bool plusMachine(const EmuHost& host) {
 
 // ============================================================== Video
 void GuiShell::sectionVideo(bool asMenu) {
-    // The set itself is a chip of the machine (Machine > Monitor); here is only how its
-    // picture is looked at.
-    const MonitorModel* set = host.monitorSetId.empty() ? (host.emu ? host.emu->shippedMonitorModel() : nullptr)
-                                                        : monitorModelFor(host.monitorSetId);
-    if (set) ImGui::TextDisabled("Monitor: %s (Machine > Monitor)", set->name);
+    // The monitor set (a chip of the machine: CtmMonitor) and its two hold controls, then
+    // how its picture is looked at.
+    const MonitorModel* shipped = host.monitorSetId.empty() && host.emu ? host.emu->shippedMonitorModel() : nullptr;
+    if (asMenu) {
+        if (ImGui::BeginMenu("Monitor")) {
+            monitorSetItems(true);
+            if (shipped) ImGui::TextDisabled("As shipped: %s", shipped->name);
+            ImGui::Separator();
+            monitorFrontItems();
+            ImGui::Separator();
+            monitorSyncItems();
+            ImGui::EndMenu();
+        }
+    } else {
+        sectionHeading("Monitor");
+        const MonitorModel* chosen = host.monitorSetId.empty() ? nullptr : monitorModelFor(host.monitorSetId);
+        ImGui::SetNextItemWidth(-1);
+        if (ImGui::BeginCombo("##videomonitor", chosen ? chosen->name : "As shipped with the machine")) { monitorSetItems(false); ImGui::EndCombo(); }
+        if (shipped) ImGui::TextDisabled("As shipped: %s", shipped->name);
+        monitorFrontItems();
+        monitorSyncItems();
+        sectionHeading("Tube");
+    }
 
     static const Choice tubes[] = {
         { "As set", "", "The tube the monitor set has" },
@@ -135,7 +153,6 @@ void GuiShell::sectionVideo(bool asMenu) {
     if (asMenu) {
         if (ImGui::BeginMenu("Tube")) { choiceRow(true, tubes, host.monitorMode, pickTube); ImGui::EndMenu(); }
     } else {
-        ImGui::TextDisabled("Tube");
         choiceRow(false, tubes, host.monitorMode, pickTube);
     }
 
@@ -1182,7 +1199,7 @@ void GuiShell::sectionDevelopment(bool asMenu) {
         std::snprintf(label, sizeof(label), "Command API (port %d)", d.apiPortSetting);
         if (ImGui::MenuItem(label, nullptr, &apiOn)) { d.apiAtStart = apiOn; if (apiOn) d.startApi(d.apiPortSetting); else d.stopApi(); }
         if (d.watched() && ImGui::MenuItem("Stop watching the file")) d.watch(LoadRequest{});
-        if (ImGui::MenuItem("Settings...")) panelOpen("Settings") = true;
+        if (ImGui::MenuItem("Settings...")) { panelOpen("External debugging") = true; focusWindowNextFrame = "External debugging"; }
         return;
     }
     auto server = [&](const char* id, bool listening, bool& atStart, int& port, bool (DevServer::*start)(int), void (DevServer::*stop)(),
