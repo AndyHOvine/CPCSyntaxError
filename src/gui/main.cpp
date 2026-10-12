@@ -231,7 +231,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape; bool z80Cmos = false, gx4000Ram128 = false; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -259,6 +259,7 @@ int main(int argc, char** argv) {
             else if (a == "--contrast" && i + 1 < argc) monitorKnobs.contrast = std::atoi(argv[++i]);       // monochrome sets only, 0..100
             else if (a == "--intensity" && i + 1 < argc) parseTriple(argv[++i], monitorIntensity);          // R,G,B output intensity, 0..200 %
             else if (a == "--gx4000-128k") gx4000Ram128 = true;                     // the GX4000 128K RAM mod
+            else if (a == "--plus-expansion" && i + 1 < argc) plusExpansionClassic = std::string(argv[++i]) != "internal";   // classic (default) or internal
             else if (a == "--z80" && i + 1 < argc) z80Cmos = std::string(argv[++i]) == "cmos";   // nmos (default) or cmos
             else if (a == "--gfx9000") gfx9000 = true;
             else if (a == "--opl4") opl4 = true;                              // an OPL4 card on the AMSDAP
@@ -286,6 +287,7 @@ int main(int argc, char** argv) {
             host.monitorHHold = monitorHHold; host.monitorVHold = monitorVHold;
             host.z80Cmos = z80Cmos;
             host.gx4000Ram128 = gx4000Ram128;
+            host.plusExpansionClassic = plusExpansionClassic;
             host.monitorKnobs = monitorKnobs;
             host.monitorSetId = monitorSet;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
@@ -658,6 +660,7 @@ int main(int argc, char** argv) {
     host.setMonitorHolds(geti("monitorhhold", 0), geti("monitorvhold", 0));
     host.setZ80Cmos(geti("z80cmos", 0) != 0);
     host.gx4000Ram128 = geti("gx4000ram128", 0) != 0;     // before the machine boots
+    host.plusExpansionClassic = geti("plusexpansionclassic", 1) != 0;
     {
         TubeKnobs knobs;
         knobs.brightness = geti("monitorbrightness", MONITOR_BRIGHTNESS_DEFAULT);
@@ -763,6 +766,8 @@ int main(int argc, char** argv) {
         SDL_SetWindowFullscreen(window, host.fullscreen ? SDL_WINDOW_FULLSCREEN_DESKTOP : 0);
     };
     shell.toggleFullscreen = toggleFullscreen;
+    // the bloom's copies add their light (the backend's next ResetRenderState undoes it)
+    shell.additiveBlend = [](const ImDrawList*, const ImDrawCmd*) { glBlendFunc(GL_SRC_ALPHA, GL_ONE); };
 
     // The tool windows' pictures (GFX9000 monitor, printer page): one texture per slot,
     // re-created when the size changes.
@@ -968,6 +973,7 @@ int main(int argc, char** argv) {
             f << "gatearray=" << host.gateArrayPart << "\n";
             f << "z80cmos=" << (host.z80Cmos ? 1 : 0) << "\n";
             f << "gx4000ram128=" << (host.gx4000Ram128 ? 1 : 0) << "\n";
+            f << "plusexpansionclassic=" << (host.plusExpansionClassic ? 1 : 0) << "\n";
             f << "audio=" << (host.audioEnabled ? 1 : 0) << "\n";
             f << "volume=" << host.masterVolume << "\n";
             f << "drive_sounds=" << (host.driveSounds ? 1 : 0) << "\n";

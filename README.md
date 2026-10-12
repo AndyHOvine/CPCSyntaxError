@@ -2,7 +2,7 @@
 
 # CPCSyntaxError
 
-CPCSyntaxError is an emulator for the Amstrad **CPC 464, CPC 6128, CPC Plus and GX4000**.
+CPCSyntaxError is an emulator for the Amstrad **CPC 464, CPC 664, CPC 6128, CPC Plus and GX4000**.
 It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of the machine.
 
 > **This is work in progress.** The video chips, the Z80 and the other chips of the CPC are
@@ -26,8 +26,8 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 | *Alcon 2020 on a GX4000* | *Sonic the Hedgehog on a GX4000* |
 | ![The M4 board and its WiFi](images/M4BoardWiFi.png) | ![The dot-matrix printer](images/dotmatrix.png) |
 | *The M4 board: the SD card, and `\|NETSTAT` on the network of the PC* | *The dot-matrix printer and the expansion settings* |
-| ![SymbOS and the memory map](images/memory%20map.png) | |
-| *SymbOS on a CPC 6128, with the memory map* | |
+| ![SymbOS and the memory map](images/memory%20map.png) | ![The BASIC window](images/basic-editor.png) |
+| *SymbOS on a CPC 6128, with the memory map* | *The BASIC window, next to the assembler* |
 
 ## Features
 
@@ -55,8 +55,9 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   formats: the AY-3-8912, the 8255, the NEC uPD765A as Amstrad connected it, and TZX 1.20.
 - **The CPC Plus ASIC** has sprites, DMA sound, the 4096-colour palette, raster interrupts,
   split screen and soft scroll.
-- The machines are the CPC 464, CPC 6128, 464 Plus, 6128 Plus and GX4000. RAM expansions go
-  up to 4 MB. Joysticks, game controllers and the analogue port of the Plus are available.
+- The machines are the CPC 464, CPC 664, CPC 6128, 464 Plus, 6128 Plus and GX4000. RAM
+  expansions go up to 4 MB. On a Plus, a classic RAM board on the expansion port behaves as on
+  the real machine (**Machine → RAM**). Joysticks, game controllers and the analogue port of the Plus are available.
 
 ### Discs and tapes
 
@@ -172,6 +173,9 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - **The assembler** is [RASM](https://github.com/EdouardBERGE/rasm), included in the program.
   Press F9 to assemble into the memory of the running machine. Press Ctrl+F9 to assemble and
   run. You can change the colours of the syntax.
+- **The BASIC window** (next to the assembler) lists the BASIC program in the machine, edits
+  it, and puts it back into memory at once, as if it had been typed. It can type RUN for you.
+  Its tokenizer is checked byte for byte against Locomotive BASIC itself.
 - **External debugging and code loading**: a **GDB server** for
   [DeZog](https://github.com/maziac/DeZog) in VS Code, a **command API** with the `cpcse-ctl`
   client, and an **auto-reload** of your build. Refer to [External debugging](#external-debugging).
@@ -223,8 +227,8 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 You can also build the program yourself (refer to [Building from source](#building-from-source)).
 GitHub Actions builds the packages (`.github/workflows/build.yml`; the Flatpak from `flatpak/`).
 
-The firmware ROMs of the CPC 464 and CPC 6128 and the system cartridge of the CPC Plus and
-GX4000 are included in `roms/`. Amstrad gave permission to distribute their copyrighted
+The firmware ROMs of the CPC 464, CPC 664, CPC 6128 and CPC Plus, and the system cartridge
+of the GX4000, are included in `roms/`. Amstrad gave permission to distribute their copyrighted
 material. Amstrad keeps that copyright.
 
 `cpcse.exe` looks for the `roms` folder next to it. To use another folder, use **File → ROM
@@ -234,8 +238,10 @@ lower case are the same.
 | For | The file name must contain |
 |---|---|
 | CPC 464 | `464 OS`, `464 BASIC` |
+| CPC 664 | `664 OS`, `664 BASIC`, `AMSDOS` |
 | CPC 6128 | `6128 OS`, `6128 BASIC`, `AMSDOS` |
-| 464 Plus, 6128 Plus, GX4000 | `burning rubber` (the system cartridge, a `.cpr` file) |
+| 464 Plus, 6128 Plus | `6128+ OS`, `6128+ BASIC`; the 6128 Plus also `Plus A2` (its AMSDOS 0.7). Without them, the system cartridge. |
+| GX4000 | `burning rubber` (the system cartridge, a `.cpr` file) |
 | M4 board | `M4ROM` (included) |
 | Multiface II | `multiface` (not included) |
 | OPL4 General MIDI samples | `yrw801` (not included, the emulator asks for it) |
@@ -293,7 +299,7 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   `j<bits>,<frames>`), `t` (type text), `k` (tap a key) and `s` (save a screenshot). This is
   sufficient to control a desktop such as SymbOS with no window.
 
-The models are `cpc464`, `cpc6128`, `cpc464plus`, `cpc6128plus` and `gx4000`.
+The models are `cpc464`, `cpc664`, `cpc6128`, `cpc464plus`, `cpc6128plus` and `gx4000`.
 
 The headless modes write to the Command Prompt that started them. `cpcse.exe` is a windowed
 program, thus the prompt does not wait for it. In a batch file that needs the result, use

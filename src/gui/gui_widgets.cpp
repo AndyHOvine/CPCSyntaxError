@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <filesystem>
 
 #ifdef _WIN32
@@ -30,7 +31,8 @@ ImVec4 rgbToVec(int rgb) {
 
 bool beginFacts(const char* id, float nameWidth) {
     if (!ImGui::BeginTable(id, 2, ImGuiTableFlags_SizingFixedFit)) return false;
-    ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, nameWidth);
+    // the names never take more than 45 % of a narrow pane: both columns' text wraps
+    ImGui::TableSetupColumn("name", ImGuiTableColumnFlags_WidthFixed, std::min(nameWidth, ImGui::GetContentRegionAvail().x * 0.45f));
     ImGui::TableSetupColumn("value", ImGuiTableColumnFlags_WidthStretch);
     return true;
 }
@@ -85,9 +87,11 @@ void led(bool on, const char* label) {
 // ---- FlowRow: items on one line while they fit, the rest on the next
 void FlowRow::place(float width) {
     if (!first) {
-        ImGui::SameLine(0.0f, spacing);
-        // what is left of the line, from where the item would go
-        if (ImGui::GetContentRegionAvail().x + 0.5f < width) ImGui::NewLine();
+        // Decided before the cursor moves: SameLine followed by NewLine would leave the
+        // SameLine position (past the edge) in the window's content width.
+        const float gap = spacing >= 0.0f ? spacing : ImGui::GetStyle().ItemSpacing.x;
+        const float edge = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;   // the line's right end
+        if (ImGui::GetItemRectMax().x + gap + width <= edge + 0.5f) ImGui::SameLine(0.0f, spacing);
     }
     first = false;
 }
@@ -133,6 +137,12 @@ void FlowRow::textColored(const ImVec4& colour, const char* t) {
     ImGui::PopStyleColor();
 }
 
+void ledRow(int value, int bits) {
+    FlowRow row;
+    row.spacing = 1.0f;
+    for (int b = bits - 1; b >= 0; b--) { row.place(ImGui::GetTextLineHeight() - 1.0f); led((value >> b) & 1); }
+}
+
 void ledGrid(std::initializer_list<LedItem> items, float column) {
     const float startX = ImGui::GetCursorPosX();
     int col = 0;
@@ -140,13 +150,31 @@ void ledGrid(std::initializer_list<LedItem> items, float column) {
     for (const LedItem& it : items) {
         const float w = ImGui::GetTextLineHeight() + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize(it.label).x;
         if (!firstItem) {
-            ImGui::SameLine(startX + column * (float)col);
-            if (ImGui::GetContentRegionAvail().x < w) { ImGui::NewLine(); col = 0; }
+            // decided before the cursor moves (SameLine then NewLine would count the
+            // SameLine position as content, past the edge)
+            const float edge = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
+            if (startX + column * (float)col + w <= edge) ImGui::SameLine(startX + column * (float)col);
+            else col = 0;
         }
         firstItem = false;
         led(it.on, it.label);
         col += 1;
     }
+}
+
+bool checkboxWrapped(const char* label, bool* v) {
+    const char* end = std::strstr(label, "##");
+    ImGui::PushID(label);
+    bool changed = ImGui::Checkbox("##box", v);
+    if (end != label) {
+        ImGui::SameLine(0.0f, ImGui::GetStyle().ItemInnerSpacing.x);
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(label, end);
+        ImGui::PopTextWrapPos();
+        if (ImGui::IsItemClicked()) { *v = !*v; changed = true; }
+    }
+    ImGui::PopID();
+    return changed;
 }
 
 void textWrappedDisabled(const char* fmt, ...) {

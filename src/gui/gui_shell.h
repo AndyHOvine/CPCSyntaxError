@@ -36,6 +36,7 @@
 namespace cpcse {
 
 class AssemblerWindow;
+class BasicWindow;
 class DskEditorWindow;
 class CheatsWindow;
 class DevServer;
@@ -69,6 +70,10 @@ public:
     // Set by main (it owns GL): put `rgba` (0xAABBGGRR, w x h) into texture `slot`,
     // creating or resizing it as needed; returns the texture id. Slot 1 GFX9000, 2 printer.
     std::function<unsigned(int slot, const uint32_t* rgba, int w, int h)> uploadTexture;
+    // Set by main (it owns GL): a draw callback after which draws ADD their light (the CRT
+    // effect's bloom); ImDrawCallback_ResetRenderState puts the usual blending back. Null:
+    // the bloom blends as other draws do.
+    ImDrawCallback additiveBlend = nullptr;
     bool quitRequested = false;
     bool mouseCaptureRequested = false;        // a click on a picture asks main to grab the mouse
     bool screenHovered = false;               // the mouse is over the emulated picture (Symbiface mouse)
@@ -85,6 +90,7 @@ private:
     SaveDialog saver;
     Debugger debugger;
     std::unique_ptr<AssemblerWindow> assembler;
+    std::unique_ptr<BasicWindow> basicWindow;
     std::unique_ptr<DskEditorWindow> dskEditor;
     std::unique_ptr<CheatsWindow> cheats;
     std::unique_ptr<DevServer> dev;

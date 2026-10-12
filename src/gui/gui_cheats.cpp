@@ -18,13 +18,16 @@ void CheatsWindow::draw(bool* open) {
     if (!ImGui::Begin("Cheats", open)) { focused = false; ImGui::End(); return; }
     focused = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
     if (!host.booted()) { ImGui::TextDisabled("Start a machine first."); ImGui::End(); return; }
-    if (ImGui::BeginTabBar("##cheattabs")) {
-        if (ImGui::BeginTabItem("Wizard")) { tabWizard(); ImGui::EndTabItem(); }
-        if (ImGui::BeginTabItem("Search")) { tabSearch(); ImGui::EndTabItem(); }
-        char label[32];
-        std::snprintf(label, sizeof label, "Cheats (%d)###cheatlist", (int)host.cheatList.cheats.size());
-        if (ImGui::BeginTabItem(label)) { tabCheats(); ImGui::EndTabItem(); }
-        ImGui::EndTabBar();
+    {
+        WrapText wrapText;                     // text wraps at the window's edge
+        if (ImGui::BeginTabBar("##cheattabs")) {
+            if (ImGui::BeginTabItem("Wizard")) { tabWizard(); ImGui::EndTabItem(); }
+            if (ImGui::BeginTabItem("Search")) { tabSearch(); ImGui::EndTabItem(); }
+            char label[32];
+            std::snprintf(label, sizeof label, "Cheats (%d)###cheatlist", (int)host.cheatList.cheats.size());
+            if (ImGui::BeginTabItem(label)) { tabCheats(); ImGui::EndTabItem(); }
+            ImGui::EndTabBar();
+        }
     }
     ImGui::End();
 }
@@ -163,7 +166,7 @@ void CheatsWindow::tabWizard() {
         pauseButton();
         ImGui::Spacing();
         ImGui::TextUnformatted("What does the number say now?");
-        ImGui::SetNextItemWidth(120);
+        fitNextItemWidth(120, "##seen");
         ImGui::InputInt("##seen", &seen);
         seen = std::clamp(seen, 0, 65535);
         ImGui::SameLine();
@@ -176,7 +179,7 @@ void CheatsWindow::tabWizard() {
         pauseButton();
         ImGui::Spacing();
         ImGui::TextUnformatted("What does it say now?");
-        ImGui::SetNextItemWidth(120);
+        fitNextItemWidth(120, "##seen2");
         ImGui::InputInt("##seen2", &seen);
         seen = std::clamp(seen, 0, 65535);
         ImGui::SameLine();
@@ -232,7 +235,7 @@ void CheatsWindow::tabWizard() {
             if (ImGui::Button("Hold it where it is")) holdAll();
         } else {
             ImGui::TextUnformatted("Keep the number at:");
-            ImGui::SetNextItemWidth(120);
+            fitNextItemWidth(120, "##wanted");
             ImGui::InputInt("##wanted", &wanted);
             wanted = std::clamp(wanted, 0, f.width == 1 ? 255 : 65535);
             ImGui::SameLine();
@@ -320,38 +323,36 @@ void CheatsWindow::tabSearch() {
     CheatFinder& f = host.cheatFinder;
     Bytes* ram = host.ram();
     if (!ram) return;
-    ImGui::TextUnformatted("Size:");
-    ImGui::SameLine();
-    if (ImGui::RadioButton("8 bits", f.width == 1) && !f.started) f.width = 1;
-    ImGui::SameLine();
-    if (ImGui::RadioButton("16 bits", f.width == 2) && !f.started) f.width = 2;
-    ImGui::TextUnformatted("Kept:");
-    ImGui::SameLine(); ImGui::Checkbox("as it is", &encBinary);
-    ImGui::SameLine(); ImGui::Checkbox("one less", &encOneLess);
-    ImGui::SameLine(); ImGui::Checkbox("BCD", &encBcd);
+    // each row breaks where the window is too narrow for it
+    FlowRow size;
+    size.text("Size:");
+    if (size.radio("8 bits", f.width == 1) && !f.started) f.width = 1;
+    if (size.radio("16 bits", f.width == 2) && !f.started) f.width = 2;
+    FlowRow kept;
+    kept.text("Kept:");
+    kept.checkbox("as it is", &encBinary);
+    kept.checkbox("one less", &encOneLess);
+    kept.checkbox("BCD", &encBcd);
     const unsigned enc = (encBinary ? 1u : 0u) | (encOneLess ? 2u : 0u) | (encBcd ? 4u : 0u);
     if (ImGui::Button("New search")) { const int w = f.width; f = CheatFinder{}; f.width = w; f.start(*ram, enc ? enc : 1u); selected = -1; }
-    ImGui::SameLine();
+    after().place(ImGui::CalcTextSize(host.paused ? "Carry on playing" : "Pause the game").x + ImGui::GetStyle().FramePadding.x * 2.0f);
     pauseButton();
     ImGui::Text("%d candidate%s", (int)f.size(), f.size() == 1 ? "" : "s");
     ImGui::Separator();
-    ImGui::SetNextItemWidth(120);
+    FlowRow value;
+    value.field(120, "##sv");
     ImGui::InputInt("##sv", &searchValue);
-    ImGui::SameLine();
-    if (ImGui::Button("Is this value")) { if (!f.started) f.start(*ram, enc ? enc : 1u); f.keepEqual(*ram, searchValue); }
-    if (ImGui::Button("Changed")) f.keepChange(*ram, CheatFinder::CHANGED);
-    ImGui::SameLine();
-    if (ImGui::Button("Unchanged")) f.keepChange(*ram, CheatFinder::UNCHANGED);
-    ImGui::SameLine();
-    if (ImGui::Button("Went up")) f.keepChange(*ram, CheatFinder::INCREASED);
-    ImGui::SameLine();
-    if (ImGui::Button("Went down")) f.keepChange(*ram, CheatFinder::DECREASED);
-    ImGui::SetNextItemWidth(120);
+    if (value.button("Is this value")) { if (!f.started) f.start(*ram, enc ? enc : 1u); f.keepEqual(*ram, searchValue); }
+    FlowRow change;
+    if (change.button("Changed")) f.keepChange(*ram, CheatFinder::CHANGED);
+    if (change.button("Unchanged")) f.keepChange(*ram, CheatFinder::UNCHANGED);
+    if (change.button("Went up")) f.keepChange(*ram, CheatFinder::INCREASED);
+    if (change.button("Went down")) f.keepChange(*ram, CheatFinder::DECREASED);
+    FlowRow delta;
+    delta.field(120, "##sd");
     ImGui::InputInt("##sd", &searchDelta);
-    ImGui::SameLine();
-    if (ImGui::Button("Changed by this")) f.keepChangedBy(*ram, searchDelta);
-    ImGui::SameLine();
-    if (ImGui::Button("Undo")) f.undo();
+    if (delta.button("Changed by this")) f.keepChangedBy(*ram, searchDelta);
+    if (delta.button("Undo")) f.undo();
     ImGui::Separator();
     if (f.size() > 2000) { ImGui::TextDisabled("Narrow it down to see them (under 2000)."); return; }
     if (ImGui::BeginTable("##found", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY | ImGuiTableFlags_Borders, ImVec2(0, 200))) {
@@ -376,7 +377,7 @@ void CheatsWindow::tabSearch() {
     }
     if (selected >= 0 && selected < (int)f.size()) {
         static int hold = 9;
-        ImGui::SetNextItemWidth(120);
+        fitNextItemWidth(120, "##hold");
         ImGui::InputInt("##hold", &hold);
         ImGui::SameLine();
         if (ImGui::Button("Hold the selected one at this")) {

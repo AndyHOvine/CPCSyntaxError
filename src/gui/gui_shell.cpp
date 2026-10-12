@@ -11,6 +11,7 @@
 #include <filesystem>
 
 #include "gui_assembler.h"
+#include "gui_basic.h"
 #include "gui_dsk_editor.h"
 #include "gui_cheats.h"
 #include "devserver.h"
@@ -48,6 +49,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Memory", "win_memory", false, false },
         { "GFX9000", "win_gfx9000", false, false },
         { "Assembler", "win_asm", false, false },
+        { "BASIC", "win_basic", false, false },
         { "DSK editor", "win_dsk_editor", false, false },
         { "Cheats", "win_cheats", false, false },
         { "CSL scripts", "win_csl", false, false },
@@ -62,6 +64,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     };
     assembler = std::make_unique<AssemblerWindow>(host, debugger, browser, saver);
     assembler->showInDisassembly = [this](int a) { showInDisassembly(a); };
+    basicWindow = std::make_unique<BasicWindow>(host, browser, saver);
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
     cheats = std::make_unique<CheatsWindow>(host, browser, saver);
     dev = std::make_unique<DevServer>(host, debugger);
@@ -95,6 +98,7 @@ void GuiShell::loadSettings(const std::map<std::string, std::string>& ini) {
     str("csl_script", cslScript); str("csl_out", cslOut); str("csl_diskdir", cslDiskDir);
     auto ci = ini.find("csl_crtc"); if (ci != ini.end()) cslCrtc = std::atoi(ci->second.c_str());
     assembler->loadSettings(ini);
+    basicWindow->loadSettings(ini);
     dev->loadSettings(ini);
     loadRememberedFolders(ini);
 }
@@ -107,6 +111,7 @@ void GuiShell::saveSettings(std::ostream& out) const {
     out << "csl_script=" << cslScript << "\n" << "csl_out=" << cslOut << "\n"
         << "csl_diskdir=" << cslDiskDir << "\n" << "csl_crtc=" << cslCrtc << "\n";
     assembler->saveSettings(out);
+    basicWindow->saveSettings(out);
     dev->saveSettings(out);
     saveRememberedFolders(out);
 }
@@ -196,6 +201,10 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         assembler->draw(&panelOpen("Assembler"));
         if (assembler->focused) toolFocusedNow = true;
     }
+    if (panelOpen("BASIC")) {
+        basicWindow->draw(&panelOpen("BASIC"));
+        if (basicWindow->focused) toolFocusedNow = true;   // keys go to the editor, not the CPC
+    }
     windowPrinter();
     romPrompt();
     windowGfx9000();
@@ -240,7 +249,7 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
         { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "DSK editor", "CSL scripts", "Printer", "Cheats",
+        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
     };
     auto placed = [&](const char* t) { return std::find(placedThisSession.begin(), placedThisSession.end(), t) != placedThisSession.end(); };
@@ -322,15 +331,23 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
             }
         } else
         dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
-        // CRT effect: a scanline overlay (dark lines every 2 source rows) and a faint
-        // additive bloom pass (the image drawn again, brighter, on top). Cheap, and off
-        // unless turned on.
+        // CRT effect: a scanline overlay (dark lines every 2 source rows) and a faint bloom.
+        // Cheap, and off unless turned on.
         if (host.crtEffect && !gfxOnMain) {
             if (host.crtBloom > 0.001f) {
-                float g = host.crtBloom * 6.0f;
-                int a = (int)(host.crtBloom * 70.0f);
-                dl->AddImage(tex, ImVec2(ox - g, oy - g), ImVec2(ox + drawW + g, oy + drawH + g),
-                             ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
+                // A glow round each bright pixel: the picture again, offset the same distance
+                // in eight directions, so the light spreads evenly and stays centred on its
+                // pixel. (It was one copy ENLARGED by g on each side: that moved every glow away
+                // from the screen's centre -- up and left in the top-left quarter.) Each copy
+                // adds its light where the renderer can, as a bloom does.
+                const float g = host.crtBloom * 6.0f, d = g * 0.7071f;
+                const ImVec2 taps[8] = { { g, 0 }, { -g, 0 }, { 0, g }, { 0, -g }, { d, d }, { -d, d }, { d, -d }, { -d, -d } };
+                const int a = std::max(1, (int)(host.crtBloom * (additiveBlend ? 16.0f : 9.0f)));
+                if (additiveBlend) dl->AddCallback(additiveBlend, nullptr);
+                for (const ImVec2& t : taps)
+                    dl->AddImage(tex, ImVec2(ox + t.x, oy + t.y), ImVec2(ox + drawW + t.x, oy + drawH + t.y),
+                                 ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
+                if (additiveBlend) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
             }
             if (host.crtScanline > 0.001f) {
                 ImU32 col = IM_COL32(0, 0, 0, (int)(host.crtScanline * 150.0f));
@@ -431,6 +448,22 @@ void GuiShell::ramItems(bool asMenu) {
         if (asMenu ? ImGui::MenuItem(l.c_str(), nullptr, sel, cur >= 0) : ImGui::Selectable(l.c_str(), sel))
             if (cur >= 0) host.bootModel(cur, r, host.crtcType);
     }
+    // A Plus's RAM beyond its own: a classic board, or an upgrade inside (EmuHost::plusExpansionClassic)
+    if (cur >= 0 && host.models[(size_t)cur].plus) {
+        ImGui::Separator();
+        const char* kinds[2] = { "Expansion: a classic board", "Expansion: an internal upgrade" };
+        const char* tips[2] = {
+            "A RAM board on the expansion port, as sold for the CPC. It does not know the ASIC:\n"
+            "with its RAM paged at &4000 and the ASIC page in, a write goes to both.",
+            "RAM added inside the Plus: it behaves as the Plus's own RAM\n"
+            "(a write under the ASIC page goes to the ASIC only)." };
+        for (int k = 0; k < 2; k++) {
+            const bool sel = host.plusExpansionClassic == (k == 0);
+            if (asMenu ? ImGui::MenuItem(kinds[k], nullptr, sel) : ImGui::Selectable(kinds[k], sel))
+                host.setPlusExpansionClassic(k == 0);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tips[k]);
+        }
+    }
 }
 void GuiShell::crtcItems(bool asMenu) {
     int cur = host.currentModel;
@@ -497,7 +530,7 @@ void GuiShell::monitorSetItems(bool asMenu) {
 // The two hold controls on the back of the set (docs/ service manuals).
 void GuiShell::monitorSyncItems() {
     int hhold = host.monitorHHold, vhold = host.monitorVHold;
-    ImGui::SetNextItemWidth(160);
+    fitNextItemWidth(160, "H. Hold");
     if (ImGui::SliderInt("H. Hold", &hhold, -79, 79)) host.setMonitorHolds(hhold, vhold);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The horizontal oscillator's free-running period against\n"
@@ -505,7 +538,7 @@ void GuiShell::monitorSyncItems() {
                           "aligned as the service manual says (15625 Hz); the end\n"
                           "of the control is 14500 Hz (+79). Turned too far, the\n"
                           "set can no longer hold the line.");
-    ImGui::SetNextItemWidth(160);
+    fitNextItemWidth(160, "V. Hold");
     if (ImGui::SliderInt("V. Hold", &vhold, -50, 50)) host.setMonitorHolds(hhold, vhold);
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("The vertical oscillator's free-running period, in lines.\n"
@@ -520,14 +553,19 @@ void GuiShell::monitorFrontItems() {
                                                         : monitorModelFor(host.monitorSetId);
     TubeKnobs k = host.monitorKnobs;
     bool changed = false;
-    ImGui::SetNextItemWidth(160);
+    fitNextItemWidth(160, "Brightness");
     changed |= ImGui::SliderInt("Brightness", &k.brightness, 0, 100);
     if (ImGui::IsItemHovered())
-        ImGui::SetTooltip("The knob on the front of the set: it moves the black level.\n"
-                          "50 is the set as calibrated. At 100 a black screen just\n"
-                          "glows (CM14 manual, CUT OFF); lower darkens the dark colours.");
+        ImGui::SetTooltip(set && set->hasContrast
+                          ? "The knob on the front of the set: it moves the black level.\n"
+                            "50 is the set as calibrated. Turn it up to light the dark\n"
+                            "colours (BASIC's blue paper becomes a lit green); at 100\n"
+                            "a black screen glows clearly."
+                          : "The knob on the front of the set: it moves the black level.\n"
+                            "50 is the set as calibrated. At 100 a black screen just\n"
+                            "glows (CM14 manual, CUT OFF); lower darkens the dark colours.");
     if (set && set->hasContrast) {
-        ImGui::SetNextItemWidth(160);
+        fitNextItemWidth(160, "Contrast");
         changed |= ImGui::SliderInt("Contrast", &k.contrast, 0, 100);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("The monochrome sets' second knob: the picture's gain.\n"
@@ -539,14 +577,13 @@ void GuiShell::monitorFrontItems() {
     // The output's colour, per set: a trim on the light of each channel to match a real
     // monitor. Not a part of the set, and the tube model is not touched.
     const MonitorModel* active = monitorModelFor(host.activeMonitorSetId());
-    char heading[96];
-    std::snprintf(heading, sizeof heading, "Output colour (%s)###outputcolour", active ? active->name : "this set");
-    if (ImGui::TreeNode(heading)) {
+    if (ImGui::TreeNode("Output colour###outputcolour")) {
+        textWrappedDisabled("For the %s only.", active ? active->name : "set plugged in now");
         std::array<int, 3> rgb = host.activeMonitorIntensity();
         bool moved = false;
         static const char* names[3] = { "Red", "Green", "Blue" };
         for (size_t c = 0; c < 3; c++) {
-            ImGui::SetNextItemWidth(160);
+            fitNextItemWidth(160, names[c]);
             moved |= ImGui::SliderInt(names[c], &rgb[c], 0, 200, "%d %%");
             if (ImGui::IsItemHovered())
                 ImGui::SetTooltip("This channel's intensity on the output, kept for this\n"
@@ -628,6 +665,7 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
         ImGui::Separator();
         if (ImGui::MenuItem("Assembler source...")) { panelOpen("Assembler") = true; assembler->requestOpen(); }
+        if (ImGui::MenuItem("BASIC program (text)...")) { panelOpen("BASIC") = true; basicWindow->requestOpen(); }
         ImGui::EndMenu();
     }
     if (ImGui::MenuItem("Save snapshot...", nullptr, false, host.booted()))
@@ -735,6 +773,8 @@ void GuiShell::menuTools() {
     ImGui::MenuItem("Assembler", nullptr, &panelOpen("Assembler"));
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
     if (ImGui::MenuItem("Assemble and run", "Ctrl+F9")) { panelOpen("Assembler") = true; assembler->assemble(true); }
+    ImGui::Separator();
+    ImGui::MenuItem("BASIC", nullptr, &panelOpen("BASIC"));
     ImGui::EndMenu();
 }
 
@@ -752,7 +792,7 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000", "Assembler" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000", "Assembler", "BASIC" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
@@ -776,7 +816,7 @@ void GuiShell::menuWindow() {
     ImGui::Separator();
     for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "Assembler", "DSK editor", "Cheats", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::BeginMenu("Interface size")) {
         for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {
@@ -921,7 +961,7 @@ void GuiShell::windowMedia() {
                 ImGui::PopID();
             }
             textWrappedDisabled("Drop a .DSK or .EDSK onto the window");
-            ImGui::Checkbox("Save disc and tape writes to their files", &host.diskWriteBack);
+            checkboxWrapped("Save disc and tape writes to their files", &host.diskWriteBack);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a program writes to a disc goes back into its image file.\nOff: the changes stay in memory (save them from the DSK editor).");
             if (!host.diskWriteError.empty()) textWrappedDisabled("Not saved: %s", host.diskWriteError.c_str());
         }

@@ -127,8 +127,14 @@ void GXMemory::remapRam() {
         readMap[2] = writeMap[2] = offset;
         readMap[3] = writeMap[3] = offset + SLOT_SIZE;
     }
+    asicMirror.fill(0xffffffff);
     if (asicRamEnabled) {
         int slot = asicRamLocation;
+        // what the RAM configuration maps under the ASIC's page: a classic expansion's RAM
+        // takes the write too (memory.h)
+        const uint32_t own = 0x10000u * (uint32_t)(1 + std::max(0, internalPages));
+        for (int s = slot; s <= slot + 1; s++)
+            if (classicExpansion && writeMap[s] >= own) asicMirror[s] = writeMap[s];
         readMap[slot] = writeMap[slot] = 0xffffffff;
         readMap[slot + 1] = writeMap[slot + 1] = 0xffffffff;
     }
@@ -217,6 +223,8 @@ void GXMemory::write(int address, int value) {
         int previous = asicRam[asicAddress];
         asicRam[asicAddress] = (uint8_t)value;
         if (asicRamHandler) asicRamHandler(asicAddress, value, previous);
+        const uint32_t mirror = asicMirror[slot];
+        if (mirror != 0xffffffff && (size_t)mirror + (address & 0x1fff) < ram.size()) ram[(size_t)mirror + (address & 0x1fff)] = (uint8_t)value;
     }
     else if ((size_t)offset + (address & 0x1fff) < ram.size()) ram[(size_t)offset + (address & 0x1fff)] = (uint8_t)value;
 }

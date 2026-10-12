@@ -1,5 +1,6 @@
 // CPCSyntaxError GUI — small pieces shared by the shell's windows.
 #pragma once
+#include <algorithm>
 #include <functional>
 #include <initializer_list>
 #include <map>
@@ -41,16 +42,29 @@ struct FlowRow {
     void textDisabled(const char* text);
     void textColored(const ImVec4& colour, const char* text);
     // An item whose width is set with SetNextItemWidth: place it, then draw it.
-    void item(float width) { place(width); ImGui::SetNextItemWidth(width); }
+    // A field narrower than asked when even a line of its own is too short for it: never
+    // past the line's end, never under three characters.
+    static float fitted(float width, float besideIt) {
+        return std::max(ImGui::GetFontSize() * 3.0f, std::min(width, ImGui::GetContentRegionAvail().x - besideIt));
+    }
+    void item(float width) { place(width); ImGui::SetNextItemWidth(fitted(width, 0.0f)); }
     // An input, combo or slider `fieldWidth` wide with its label after it: placed, its
-    // width set; the caller draws it next.
+    // width set (less in a window too narrow for it); the caller draws it next.
     void field(float fieldWidth, const char* label) {
         const float text = ImGui::CalcTextSize(label, nullptr, true).x;
-        place(fieldWidth + (text > 0.0f ? ImGui::GetStyle().ItemInnerSpacing.x + text : 0.0f));
-        ImGui::SetNextItemWidth(fieldWidth);
+        const float labelW = text > 0.0f ? ImGui::GetStyle().ItemInnerSpacing.x + text : 0.0f;
+        place(fieldWidth + labelW);
+        ImGui::SetNextItemWidth(fitted(fieldWidth, labelW));
     }
     void newRow() { first = true; }
 };
+// The next item's width: `width`, or less where what is left of the line (with the item's
+// label after it) is shorter; never under three characters. For a combo, input or slider
+// that would otherwise run past a narrow window's edge.
+inline void fitNextItemWidth(float width, const char* label = "") {
+    const float text = ImGui::CalcTextSize(label, nullptr, true).x;
+    ImGui::SetNextItemWidth(FlowRow::fitted(width, text > 0.0f ? ImGui::GetStyle().ItemInnerSpacing.x + text : 0.0f));
+}
 // A row that goes on from the item just drawn: `if (after().smallButton("Get it..."))`
 // is SameLine-and-button that moves to the next line when the button would not fit.
 inline FlowRow after() { FlowRow r; r.first = false; return r; }
@@ -70,8 +84,14 @@ struct LedItem {
     LedItem(long long v, const char* l) : on(v != 0), label(l) {}
 };
 void ledGrid(std::initializer_list<LedItem> items, float column);
+// `bits` LEDs for a value, the highest bit first, in a row that wraps in a narrow window.
+void ledRow(int value, int bits);
 // Text that wraps at the window's edge (Text/TextDisabled/TextColored do not by default).
 void textWrappedDisabled(const char* fmt, ...);
+// A checkbox whose label wraps at the window's edge (ImGui's label is always one line, so a
+// long one runs off a narrow window). A click on the label toggles it, as on ImGui's. A
+// "##" in the label starts the part that is only an ID, as in ImGui.
+bool checkboxWrapped(const char* label, bool* v);
 
 // Writes a file whole or not at all: to a temporary file beside it, then renamed over it,
 // so a failed write (a full disc) leaves the old file as it was instead of cut short.

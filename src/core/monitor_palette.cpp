@@ -128,9 +128,17 @@ static std::array<double, 3> phosphorLinear(double x, double y) {
 // Brightness 0 -> -0.20, 50 -> 0, 100 -> +0.06: at the top a black (drive 0) is displayed at
 // 0.06^gamma = about 2 %, "faintly" lit. Contrast 0 -> gain 0.3, 100 -> 1: with both at 0 a
 // full white drives 0.3 - 0.2 = 0.1, displayed at about 4 %, letters "seen slightly".
-static double brightnessOffset(int knob) {
+// THE MONOCHROME SETS turn further up. The GT 65's video path is DC coupled from the DIN to
+// the cathode (circuit diagram: Q601, D602, Q602 Contrast, Q603/Q604 Bright, Q605; no
+// coupling capacitor), so its Bright pot moves the black level itself, and its voltage table
+// moves Q605's base by a whole volt (Q604 collector 0.9-1.9 V) across the pot. The CPC's blue
+// is only 33/463 of the LUM swing, so it is near black until the knob lifts it: with the knob
+// up, the blue paper of BASIC is a lit green. The manual does not give the video swing, so the
+// top of the range (+0.5) is CHOSEN, not printed: at 100 a black screen glows clearly.
+static double brightnessOffset(int knob, bool mono) {
     knob = std::max(0, std::min(100, knob));
-    return knob < 50 ? -0.20 * (50 - knob) / 50.0 : 0.06 * (knob - 50) / 50.0;
+    const double top = mono ? 0.50 : 0.06;
+    return knob < 50 ? -0.20 * (50 - knob) / 50.0 : top * (knob - 50) / 50.0;
 }
 static double contrastGain(int knob) { return 0.3 + 0.7 * std::max(0, std::min(100, knob)) / 100.0; }
 
@@ -141,7 +149,7 @@ static constexpr int LUM_STEPS = 4096;
 
 void TubeTransform::configure(const std::string& mode, const TubeKnobs& knobs) {
     const std::string m = normaliseMonitorMode(mode);
-    const double offset = brightnessOffset(knobs.brightness), gain = contrastGain(knobs.contrast);
+    const double offset = brightnessOffset(knobs.brightness, m != MONITOR_MODE_COLOUR), gain = contrastGain(knobs.contrast);
     const double gamma = tubeGamma();
     colour = m == MONITOR_MODE_COLOUR;
     identity = colour && knobs.isDefault();

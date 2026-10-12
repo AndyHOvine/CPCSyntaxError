@@ -347,7 +347,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
                           "Off: the board has no network.");
     if (host.m4Network) {
         if (asMenu) { if (ImGui::MenuItem("M4 servers: accept other computers", nullptr, &host.m4NetworkLan)) host.applyM4Network(); }
-        else if (ImGui::Checkbox("Servers: accept other computers", &host.m4NetworkLan)) host.applyM4Network();
+        else if (checkboxWrapped("Servers: accept other computers", &host.m4NetworkLan)) host.applyM4Network();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("A CPC program that listens (C_NETBIND) is reachable from your network.\n"
                               "Off: only from this computer (127.0.0.1).");
@@ -383,7 +383,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
                                             { "Loopback plug", "loopback", "TXD to RXD, RTS to CTS, DTR to DCD" } };
             const char* shown = kinds[0].label;
             for (const Choice& k : kinds) if (host.serialKind == k.value) shown = k.label;
-            ImGui::SetNextItemWidth(180);
+            fitNextItemWidth(180, "Line");
             if (ImGui::BeginCombo("Line", shown)) {
                 for (const Choice& k : kinds) {
                     if (ImGui::Selectable(k.label, host.serialKind == k.value)) {
@@ -401,8 +401,9 @@ void GuiShell::sectionExpansions(bool asMenu) {
                 static char target[128] = "";
                 static std::string shownFor;
                 if (shownFor != host.serialTarget) { std::snprintf(target, sizeof target, "%s", host.serialTarget.c_str()); shownFor = host.serialTarget; }
-                ImGui::SetNextItemWidth(180);
-                if (ImGui::InputText(host.serialKind == "listen" ? "Port" : host.serialKind == "tcp" ? "Host:port" : "Device", target, sizeof target,
+                const char* targetLabel = host.serialKind == "listen" ? "Port" : host.serialKind == "tcp" ? "Host:port" : "Device";
+                fitNextItemWidth(180, targetLabel);
+                if (ImGui::InputText(targetLabel, target, sizeof target,
                                      ImGuiInputTextFlags_EnterReturnsTrue)) {
                     host.serialTarget = shownFor = target;
                     if (host.serialEnabled) host.connectSerial();
@@ -460,7 +461,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
         ImGui::MenuItem("GFX9000 monitor", nullptr, &panelOpen("GFX9000"), host.v9990Enabled);
     } else {
         sectionHeading("Graphics cartridge");
-        if (ImGui::Checkbox("GFX9000 (Yamaha V9990 at &FF60)", &gfx)) host.setV9990(gfx);
+        if (checkboxWrapped("GFX9000 (Yamaha V9990 at &FF60)", &gfx)) host.setV9990(gfx);
         if (host.v9990Enabled) { if (after().smallButton("Monitor")) panelOpen("GFX9000") = true; }
     }
 
@@ -495,7 +496,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
     } else {
         sectionHeading("Sound card");
         bool pc = host.playCityEnabled;
-        if (ImGui::Checkbox("PlayCity (2 x YMZ294 + Z80 CTC, &F880-&F988)", &pc)) host.setPlayCity(pc);
+        if (checkboxWrapped("PlayCity (2 x YMZ294 + Z80 CTC, &F880-&F988)", &pc)) host.setPlayCity(pc);
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip("TotO's PlayCity: six more AY channels in stereo (one YMZ294 a side),\n"
                               "and a Z80 CTC for raster NMIs and IM2 timer interrupts.");
@@ -505,7 +506,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
                 { "LambdaSpeak 3 + MP3 module", "lambdaspeak3" } };
             const char* shown = kinds[0].first;
             for (const auto& k : kinds) if (host.speechKind == k.second) shown = k.first;
-            ImGui::SetNextItemWidth(220);
+            fitNextItemWidth(220, "speech");
             if (ImGui::BeginCombo("speech", shown)) {
                 for (const auto& k : kinds)
                     if (ImGui::Selectable(k.first, host.speechKind == k.second)) {
@@ -533,7 +534,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
                 if (after().smallButton("Get it...##sp")) romPromptFor = "sp0256";
             }
         }
-        if (ImGui::Checkbox("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) {
+        if (checkboxWrapped("OPL4 (YMF278B, AMSDAP &FFC4/&FF7E)", &opl)) {
             host.setOpl4(opl);
             if (opl && !host.opl4HasRom()) romPromptFor = "opl4";
         }
@@ -541,7 +542,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::SetTooltip("A MoonSound-style OPL4: 18 FM channels (OPL3) and 24 wavetable channels.\n"
                               "SymbOS / SymAmp use it for FM, MOD and wavetable music.");
         ImGui::BeginDisabled(!host.opl4Enabled);
-        ImGui::SetNextItemWidth(120);
+        fitNextItemWidth(120, "sample RAM");
         if (ImGui::BeginCombo("sample RAM", ramLabel(host.opl4RamKiB).c_str())) {
             for (int k : ramSizes)
                 if (ImGui::Selectable(ramLabel(k).c_str(), host.opl4RamKiB == k)) { host.opl4RamKiB = k; host.applyOpl4(); }
@@ -632,10 +633,9 @@ void GuiShell::tapeDeckControls(bool asMenu) {
     const float w = std::max(widest, (ImGui::GetContentRegionAvail().x - style.ItemSpacing.x * 7) / 8);
     bool first = true;
     auto button = [&](const char* label, const char* tip, bool lit, bool enabled) {
-        if (!first) {
-            ImGui::SameLine();
-            if (ImGui::GetCursorScreenPos().x + w > right + 1) ImGui::NewLine();
-        }
+        // decided before the cursor moves (SameLine then NewLine would count the SameLine
+        // position as content, past the edge)
+        if (!first && ImGui::GetItemRectMax().x + style.ItemSpacing.x + w <= right + 1) ImGui::SameLine();
         first = false;
         if (lit) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
         ImGui::BeginDisabled(!enabled);
@@ -718,9 +718,12 @@ void GuiShell::windowPrinter() {
     if (!open) return;
     if (ImGui::Begin("Printer", &open)) {
         WrapText wrapText;                     // text wraps at the window's edge
-        ImGui::TextDisabled("Printer port:");
-        ImGui::SameLine();
-        printerPortItems(false);
+        {
+            FlowRow port;
+            port.textDisabled("Printer port:");
+            port.place(180.0f);                // the combo, at least 180 wide, else on the next line
+            printerPortItems(false);
+        }
         // The tab of the printer that is fitted comes to the front when it is fitted.
         const bool refit = printerTabDevice != host.dacType;
         printerTabDevice = host.dacType;
@@ -938,8 +941,7 @@ void GuiShell::windowGfx9000() {
         static const char* placeNames[] = { "beside the CPC's screen", "in this window", "one monitor, switched", "one monitor, via a Video9000" };
         int place = 0;
         for (int i = 0; i < 4; i++) if (host.gfx9000Monitor == places[i]) place = i;
-        head.item(ImGui::GetFontSize() * 18 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("picture").x);
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 18);
+        head.field(ImGui::GetFontSize() * 18, "picture");
         if (ImGui::Combo("picture", &place, placeNames, 4)) host.gfx9000Monitor = places[place];
         if (!host.v9990Enabled) ImGui::TextDisabled("Not fitted.");
         else if (ImGui::BeginTabBar("##gfxtabs")) {
@@ -1014,9 +1016,11 @@ void GuiShell::windowCslScripts() {
         WrapText wrapText;                     // text wraps at the window's edge
         const bool busy = cslRun && cslRun->running;
         ImGui::BeginDisabled(busy);
+        // The fields line up at x 110 when the window has room, else go under their label.
+        const bool besideLabel = ImGui::GetContentRegionAvail().x >= 110.0f + 220.0f;
         auto pathRow = [&](const char* label, std::string& value, const char* button, auto pick) {
             ImGui::TextUnformatted(label);
-            ImGui::SameLine(110);
+            if (besideLabel) ImGui::SameLine(110);
             ImGui::SetNextItemWidth(-90);
             char buf[512]; std::snprintf(buf, sizeof buf, "%s", value.c_str());
             char id[32]; std::snprintf(id, sizeof id, "##%s", label);
@@ -1037,13 +1041,13 @@ void GuiShell::windowCslScripts() {
             browser.openDir("Disc image folder", cslDiskDir.empty() ? host.romDir : cslDiskDir, [this](const std::string& d) { cslDiskDir = d; });
         });
         ImGui::TextUnformatted("CRTC");
-        ImGui::SameLine(110);
-        ImGui::SetNextItemWidth(220);
+        if (besideLabel) ImGui::SameLine(110);
+        ImGui::SetNextItemWidth(std::min(220.0f, ImGui::GetContentRegionAvail().x));
         const char* crtcs[] = { "As the script says", "0", "1", "2", "3", "4" };
         int sel = cslCrtc + 1;
         if (ImGui::Combo("##cslcrtc", &sel, crtcs, 6)) cslCrtc = sel - 1;
-        ImGui::Checkbox("Follow csl_load chains", &cslChain);
-        after().checkbox("Apply published-script errata", &cslErrata);
+        checkboxWrapped("Follow csl_load chains", &cslChain);
+        checkboxWrapped("Apply published-script errata", &cslErrata);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: play published scripts exactly as written.");
         ImGui::EndDisabled();
 
@@ -1211,7 +1215,7 @@ void GuiShell::sectionDevelopment(bool asMenu) {
             if (on) (d.*start)(port); else (d.*stop)();
         }
         after().item(ImGui::GetFontSize() * 6 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Port").x);
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 6);
+        fitNextItemWidth(ImGui::GetFontSize() * 6, "Port");
         ImGui::InputInt("Port", &port, 0, 0);
         if (ImGui::IsItemDeactivatedAfterEdit()) {   // applied when the field is left
             port = std::clamp(port, 1, 65535);
@@ -1244,10 +1248,10 @@ void GuiShell::sectionDevelopment(bool asMenu) {
         if (after().smallButton("Browse..."))
             browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".hfe", ".cpr", ".cdt", ".tzx", ".wav" },
                          [this](const std::string& p) { std::snprintf(devWatchPath, sizeof(devWatchPath), "%s", p.c_str()); });
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+        fitNextItemWidth(ImGui::GetFontSize() * 7, "Load at");
         ImGui::InputTextWithHint("Load at", "header", devWatchAddr, sizeof(devWatchAddr));
         after().item(ImGui::GetFontSize() * 7 + ImGui::GetStyle().ItemInnerSpacing.x + ImGui::CalcTextSize("Start at").x);
-        ImGui::SetNextItemWidth(ImGui::GetFontSize() * 7);
+        fitNextItemWidth(ImGui::GetFontSize() * 7, "Start at");
         ImGui::InputTextWithHint("Start at", "entry / -", devWatchRun, sizeof(devWatchRun));
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6);
         ImGui::InputTextWithHint("Then type", "RUN\"GAME\\n (disc, tape)", devWatchCommand, sizeof(devWatchCommand));

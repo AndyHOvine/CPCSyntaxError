@@ -40,6 +40,16 @@ public:
     // contiguous expansion; a silicon disc answers only pages 4..7. Set to all by
     // setRamSize, so only a caller that fits such a board changes it.
     int expansionPages = 0xff;
+    // A PLUS WITH A CLASSIC RAM EXPANSION (a board on the expansion port). The board decodes
+    // the Gate Array's RAM configuration itself and does not know the ASIC's page: when it
+    // maps its RAM at &4000-&7FFF while the ASIC page is in, a write goes to the ASIC AND to
+    // the board's RAM (AndyCadley, CPCWiki forum: "Old RAM expansions don't understand and so
+    // mirror the write to RAM"). The machine's own RAM does not: internalPages is how many
+    // 64K expansion pages it has itself (1 on a 6128 Plus, 0 on a 464 Plus or GX4000; an
+    // internal upgrade counts as its own). Reads stay the ASIC's.
+    bool classicExpansion = false;
+    int internalPages = 0;
+    std::array<uint32_t, 8> asicMirror{};     // per slot: the RAM a write under the ASIC also reaches (or none)
 
     // Handlers (optional; empty == absent). Read handlers return -1 for null.
     std::function<void(int address, int value, int previous)> asicRamHandler;

@@ -797,6 +797,9 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     // of the CRTC it is paired with, so it travels with the chip profile.
     gateArray->modeSwitchPixelInByte = crtc->behaviour->modeSwitchPixelInByte();
     memory->setRamSize(selectedRam);
+    const int ownRam = options.internalRamKiB >= 0 ? options.internalRamKiB : (plusComputer && selectedRam >= 128 ? 128 : 64);
+    memory->internalPages = ownRam >= 128 ? 1 : 0;
+    memory->classicExpansion = options.classicExpansion;
     memory->loadCartridge(cart.banks); cartridge = std::make_shared<Cartridge>(cart); reset();
 }
 void GX4000::loadCartridge(const Cartridge& cart) { loadCartridge(cart, LoadCartridgeOptions{}); }

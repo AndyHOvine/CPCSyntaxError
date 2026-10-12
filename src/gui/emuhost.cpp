@@ -4,6 +4,8 @@
 #include "../core/monitor_renderer.h"
 #include "../core/gate_array.h"
 #include "keymap.h"
+#include "cpc_typing.h"
+#include "core/basic.h"
 #include "core/emulator.h"
 #include "core/video.h"
 #include "core/ay.h"
@@ -165,16 +167,22 @@ void EmuHost::scanModels() {
     models = {
         // id            label                 osKey        basicKey      amsdos ram  crtc plus cartKey
         { "cpc464",     "Amstrad CPC 464",   "464 os !+",  "464 basic !+", false, 64,  1, false, "" },
+        // The 664: disc drive and AMSDOS, 64K, its own OS and BASIC ROMs. Its board takes a
+        // 40010 only (ACCC 1.11 p.46), the Gate Array fitted by default.
+        { "cpc664",     "Amstrad CPC 664",   "664 os !+ !amsdos", "664 basic !+", true, 64, 1, false, "" },   // "os": not "Amsdos"
         { "cpc6128",    "Amstrad CPC 6128",  "6128 os !+", "6128 basic !+",true,  128, 1, false, "" },
-        { "cpc464plus", "Amstrad 464 Plus",  "",           "",             false, 64,  3, true,  "burning rubber" },
-        { "cpc6128plus","Amstrad 6128 Plus", "",           "",             true,  128, 3, true,  "burning rubber" },
+        // A Plus computer starts from its OS and BASIC ROMs (the system cartridge's pages 0
+        // and 1, dumped), or from the system cartridge when those are not in the ROM folder.
+        { "cpc464plus", "Amstrad 464 Plus",  "6128+ os",   "6128+ basic",  false, 64,  3, true,  "burning rubber" },
+        { "cpc6128plus","Amstrad 6128 Plus", "6128+ os",   "6128+ basic",  true,  128, 3, true,  "burning rubber" },
         // GX4000: a 464 Plus with no keyboard/tape and dual joystick input (all
         // other Plus/ASIC features). computer=false → no keyboard, console mode.
         { "gx4000",     "Amstrad GX4000",    "",           "",             false, 64,  3, true,  "burning rubber", false, false },
     };
     for (auto& m : models) {
-        if (m.plus) m.available = !findCart(m.cartKey).empty();
-        else        m.available = !findRom(m.osKey).empty() && !findRom(m.basicKey).empty();
+        const bool roms = !m.osKey.empty() && !findRom(m.osKey).empty() && !findRom(m.basicKey).empty();
+        if (m.plus) m.available = roms || !findCart(m.cartKey).empty();
+        else        m.available = roms;
     }
 }
 
@@ -212,18 +220,66 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     ModelProfile& m = models[index];
     if (index != currentModel) { osRomPath.clear(); basicRomPath.clear(); amsdosRomPath.clear(); }  // different model → different firmware
 
-    // A CPC Plus boots from its system cartridge (the localized "Burnin' Rubber"
-    // Amstrad Plus System cart) with the ASIC enabled — not loose OS/BASIC ROMs.
+    // A CPC Plus starts from a cartridge with the ASIC enabled. A Plus computer's is built from
+    // its OS and BASIC ROMs when the ROM folder has them -- the system cartridge's own layout:
+    // page 0 the OS, 1 BASIC, 3 AMSDOS (on the 6128 Plus) -- else it is the system
+    // cartridge (the localized "Burnin' Rubber" cart), as the GX4000's always is.
     if (m.plus) {
-        std::string cartPath = findCart(m.cartKey);
-        if (cartPath.empty()) { status = m.label + " needs the Plus system cartridge (Burnin' Rubber .cpr) in " + mediaDir; return false; }
-        bool okc = false;
-        Bytes data = readFile(cartPath, okc);
-        if (!okc || data.empty()) { status = "Could not read system cartridge."; return false; }
+        std::string plusAmsdosNote;          // where a 6128 Plus's AMSDOS came from, when not its own file
         Cartridge cart;
-        try { cart = parseCartridge(data); }
-        catch (const std::exception& ex) { status = std::string("Invalid system cartridge: ") + ex.what(); return false; }
-        if (cart.banks.empty()) { status = "Invalid system cartridge."; return false; }
+        const std::string plusOs = m.computer && !m.osKey.empty() ? findRom(m.osKey) : "";
+        const std::string plusBasic = m.computer && !m.basicKey.empty() ? findRom(m.basicKey) : "";
+        if (!plusOs.empty() && !plusBasic.empty()) {
+            bool a = false, b = false, c = true;
+            cart.format = "ROMs";
+            cart.banks.assign(4, Bytes{});
+            cart.banks[0] = readFile(plusOs, a);
+            cart.banks[1] = readFile(plusBasic, b);
+            // The 6128 Plus's AMSDOS is 0.7 (its own |GAME, |TAPE...), page 3 of the system
+            // cartridge; the 6128's AMSDOS 0.5 stops the Plus OS after its banner. So: a Plus
+            // AMSDOS file in the ROM folder, else that page read from the system cartridge (the
+            // cartridge is not started), else 0.5.
+            if (m.amsdos) {
+                // its file: named for AMSDOS, or the common dump "464+ Plus A2 OS", which is in
+                // fact AMSDOS 0.7 (header 01 00 07 00, the system cartridge's page 3 byte for
+                // byte). Taken only when its header says a background ROM.
+                std::string ams = findRom("6128+ amsdos");
+                if (ams.empty()) ams = findRom("plus a2");
+                if (!ams.empty()) {
+                    Bytes rom = readFile(ams, c);
+                    if (c && rom.size() == 0x4000 && rom[0] == 0x01) cart.banks[3] = rom;
+                    else c = true;                   // not AMSDOS: look further
+                }
+                if (cart.banks[3].empty()) {
+                    const std::string systemCart = findCart(m.cartKey);
+                    bool okc = false;
+                    const Bytes data = systemCart.empty() ? Bytes{} : readFile(systemCart, okc);
+                    try {
+                        const Cartridge sys = okc ? parseCartridge(data) : Cartridge{};
+                        if (sys.banks.size() > 3 && sys.banks[3].size() == 0x4000 && sys.banks[3][0] == 0x01) {   // a background ROM: AMSDOS
+                            cart.banks[3] = sys.banks[3];
+                            plusAmsdosNote = " (AMSDOS 0.7 from the system cartridge)";
+                        }
+                    } catch (const std::exception&) {}
+                    if (cart.banks[3].empty()) {
+                        ams = findRom("amsdos");
+                        if (!ams.empty()) cart.banks[3] = readFile(ams, c);
+                        plusAmsdosNote = " (AMSDOS 0.5: the 6128 Plus may stop at its banner; add its AMSDOS 0.7)";
+                    }
+                }
+            }
+            if (!a || !b || !c || cart.banks[0].size() != 0x4000 || cart.banks[1].size() != 0x4000) { status = "Could not read the Plus ROMs."; return false; }
+            cart.bankCount = 4;
+        } else {
+            const std::string systemCart = findCart(m.cartKey);
+            if (systemCart.empty()) { status = m.label + " needs its OS and BASIC ROMs in " + romDir + ", or the Plus system cartridge (Burnin' Rubber .cpr) in " + mediaDir; return false; }
+            bool okc = false;
+            Bytes data = readFile(systemCart, okc);
+            if (!okc || data.empty()) { status = "Could not read system cartridge."; return false; }
+            try { cart = parseCartridge(data); }
+            catch (const std::exception& ex) { status = std::string("Invalid system cartridge: ") + ex.what(); return false; }
+            if (cart.banks.empty()) { status = "Invalid system cartridge."; return false; }
+        }
         // A GX4000 has 64K; with the 128K RAM mod (gx4000Ram128) it banks like a 6128.
         ramKiB = !m.computer ? (gx4000Ram128 ? 128 : 64) : ram > 0 ? ram : m.defaultRam;
         crtcType = 3;
@@ -231,6 +287,8 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         opt.plusComputer = m.computer;     // GX4000 = console (no keyboard)
         opt.ram128 = ramKiB >= 128;
         opt.ramKiB = ramKiB;
+        opt.internalRamKiB = m.computer ? m.defaultRam : (gx4000Ram128 ? 128 : 64);   // the machine's own
+        opt.classicExpansion = plusExpansionClassic;
         emu->loadCartridge(cart, opt);
         emu->hasFdc = m.amsdos;
         applyAudioRate();
@@ -240,7 +298,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         cartName.clear(); cartPath.clear();
         snapshotName.clear();
         paused = false;
-        status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, " + (m.computer ? "Plus/ASIC" : "GX4000 console") + ")";
+        status = "Booted " + m.label + "  (" + std::to_string(ramKiB) + "K, " + (m.computer ? "Plus/ASIC" : "GX4000 console") + ")" + plusAmsdosNote;
         return true;
     }
 
@@ -816,10 +874,13 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     ModelProfile& m = models[currentModel >= 0 ? currentModel : 0];
     GX4000::LoadCartridgeOptions opt;
     opt.plusComputer = m.computer;
-    // A Plus computer keeps its RAM; a GX4000 has 64K, or 128K with the RAM mod.
+    // A Plus computer keeps its RAM (its expansion too); a GX4000 has 64K, or 128K with the
+    // RAM mod.
     const bool ram128 = m.computer ? ramKiB >= 128 : gx4000Ram128;
     opt.ram128 = ram128;
-    opt.ramKiB = ram128 ? 128 : 64;
+    opt.ramKiB = m.computer ? std::max(64, ramKiB) : (ram128 ? 128 : 64);
+    opt.internalRamKiB = m.computer ? m.defaultRam : (gx4000Ram128 ? 128 : 64);
+    opt.classicExpansion = plusExpansionClassic;
     if (!m.computer) ramKiB = opt.ramKiB;
     emu->loadCartridge(cart, opt);
     cartPath = path;
@@ -1125,6 +1186,11 @@ bool EmuHost::loadSnapshot(const std::string& path) {
     return true;
 }
 
+void EmuHost::setPlusExpansionClassic(bool classic) {
+    plusExpansionClassic = classic;
+    if (emu && emu->memory) { emu->memory->classicExpansion = classic; emu->memory->remapRam(); }   // live: no restart needed
+}
+
 void EmuHost::setGx4000Ram128(bool on) {
     gx4000Ram128 = on;
     if (currentModel < 0 || models[(size_t)currentModel].computer) return;   // takes effect on a GX4000
@@ -1166,9 +1232,55 @@ void EmuHost::stepInstruction(bool redraw) {
     if (redraw) render();
 }
 
+bool EmuHost::basicProgramEnd(int& end, bool& basic10) const {
+    if (!emu || !emu->memory || emu->memory->ram.size() < 0x10000) return false;
+    const Bytes& ram = emu->memory->ram;
+    auto word = [&](int a) { return ram[(size_t)a] | ram[(size_t)a + 1] << 8; };
+    int a = BASIC_PROGRAM_START;
+    for (int lines = 0; lines < 20000; lines++) {
+        const int len = word(a);
+        if (len == 0) break;
+        if (len < 5 || a + len >= 0xa000) return false;   // not a program
+        a += len;
+    }
+    end = a + 2;
+    for (bool b10 : { false, true })
+        if (word(basicEndPointers(b10)) == end) { basic10 = b10; return true; }
+    return false;
+}
+
+bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
+    int end = 0;
+    bool basic10 = false;
+    if (!basicProgramEnd(end, basic10)) {
+        why = "BASIC is not at its Ready prompt (its pointers do not hold the end of the program in memory).";
+        return false;
+    }
+    const int newEnd = BASIC_PROGRAM_START + (int)program.size();
+    if (program.size() < 2 || newEnd >= 0xa000) { why = "The program is too long for BASIC's memory."; return false; }
+    Bytes& ram = emu->memory->ram;
+    ram[BASIC_PROGRAM_START - 1] = 0;
+    std::copy(program.begin(), program.end(), ram.begin() + BASIC_PROGRAM_START);
+    // the variables, the arrays and free space start where the program ends: none yet
+    for (int k = 0; k < 4; k++) {
+        ram[(size_t)(basicEndPointers(basic10) + 2 * k)] = (uint8_t)(newEnd & 0xff);
+        ram[(size_t)(basicEndPointers(basic10) + 2 * k + 1)] = (uint8_t)(newEnd >> 8);
+    }
+    return true;
+}
+
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
     framesRun++;
+    if (typedAt < typed.size() && emu->keyboard) {   // typeText's queue: a key at a time
+        const char c = typed[typedAt];
+        if (typedPhase == 0 && !cpcTypeKey(*emu->keyboard, c, true)) typedPhase = 7;   // no key types it: skipped
+        else if (typedPhase == 4) cpcTypeKey(*emu->keyboard, c, false);
+        if (++typedPhase == 8) {
+            typedPhase = 0;
+            if (++typedAt == typed.size()) { typed.clear(); typedAt = 0; }
+        }
+    }
     for (int u = 0; u < 2; u++) if (diskDirty[u] && framesRun - diskLastWrite[u] > 50) flushDisk(u);   // a second idle
     if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram);   // the freezes, every frame
     emu->memory->watchArmed = watchArmed;

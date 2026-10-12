@@ -2,9 +2,15 @@ Amstrad CPC firmware ROMs, the CPC Plus / GX4000 system cartridge, and the M4 bo
 
   Amstrad CPC 464 OS (1985)(Amstrad).bin
   Amstrad CPC 464 BASIC (1985)(Amstrad).bin
+  Amstrad CPC 664 OS (1985)(Amstrad).bin
+  Amstrad CPC 664 BASIC (1985)(Amstrad).bin
+  Amstrad CPC 664 Amsdos (1985)(Amstrad).bin
   Amstrad CPC 6128 OS (1985)(Amstrad).bin
   Amstrad CPC 6128 BASIC (1986)(Amstrad).bin
   AMSDOS.ROM
+  Amstrad CPC 464+ and 6128+ OS (1991)(Amstrad).bin       (the Plus OS: page 0 of the cartridge)
+  Amstrad CPC 464+ and 6128+ BASIC (1991)(Amstrad).bin    (the Plus BASIC: page 1)
+  Amstrad CPC 464+ Plus A2 OS (1991)(Amstrad).bin         (in fact the 6128 Plus's AMSDOS 0.7: page 3)
   Basic - Burning Rubber (E) (Yellow Label).cpr   (CPC Plus / GX4000 system cartridge)
 
 Amstrad have kindly given their permission for the redistribution of their

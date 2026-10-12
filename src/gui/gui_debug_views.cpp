@@ -55,6 +55,7 @@ void GuiShell::debugToolbar() {
 // ============================================================== CPU
 void GuiShell::cpuContent() {
     {
+        WrapText wrapText;                     // a child window: its text wraps here
         GX4000* e = host.emu;
         Z80* c = e->cpu;
         const bool edit = host.paused;
@@ -111,14 +112,14 @@ void GuiShell::cpuContent() {
         }
         // Flags, clickable while paused.
         const char* names = "SZ5H3PNC";
-        ImGui::TextDisabled("F");
+        FlowRow flags;
+        flags.textDisabled("F");
         for (int b = 0; b < 8; b++) {
-            ImGui::SameLine();
             int mask = 0x80 >> b;
             bool on = (c->f & mask) != 0;
             char label[8]; std::snprintf(label, sizeof(label), "%c##f%d", names[b], b);
             ImGui::PushStyleColor(ImGuiCol_Text, on ? kAccent : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled));
-            if (ImGui::SmallButton(label) && edit) c->f ^= mask;
+            if (flags.smallButton(label) && edit) c->f ^= mask;
             ImGui::PopStyleColor();
         }
         ImGui::Text("IM %d   IFF1 %d  IFF2 %d  %s", c->im, c->iff1 ? 1 : 0, c->iff2 ? 1 : 0, c->halted ? "HALT" : "");
@@ -300,7 +301,7 @@ void GuiShell::memoryHexContent() {
         GX4000* e = host.emu;
         GXMemory* m = e->memory;
         static const char* views[] = { "CPU view (64K as the Z80 sees it)", "Physical RAM", "ASIC RAM (Plus)" };
-        ImGui::SetNextItemWidth(230);
+        ImGui::SetNextItemWidth(std::min(230.0f, ImGui::GetContentRegionAvail().x));
         if (ImGui::Combo("##view", &memView, views, IM_ARRAYSIZE(views))) { memSelected = -1; memEditing = -1; memTop = 0; memScrollTo = true; }
         after().field(120, "##goto");
         if (ImGui::InputTextWithHint("##goto", "address / label", memGoto, sizeof(memGoto), ImGuiInputTextFlags_EnterReturnsTrue)) {
@@ -338,16 +339,23 @@ void GuiShell::memoryHexContent() {
 
         ImGui::BeginChild("##mem", ImVec2(0, 0), ImGuiChildFlags_Borders);
         const float rowH = ImGui::GetTextLineHeightWithSpacing();
-        if (memScrollTo) { ImGui::SetScrollY((memTop / 16) * rowH); memScrollTo = false; }
         const float cellW = ImGui::CalcTextSize("00").x;
+        // 16 bytes a row when the pane has room, else 8, else 4: the rows fit, not clip.
+        auto rowWidth = [&](int n) {
+            return ImGui::CalcTextSize(size > 0x10000 ? "00000" : "0000").x + n * (cellW + 6.0f) + (n == 16 ? 6.0f : 0.0f) +
+                   12.0f + ImGui::CalcTextSize("0").x * (float)n;
+        };
+        const float room = ImGui::GetContentRegionAvail().x;
+        const int perRow = rowWidth(16) <= room ? 16 : rowWidth(8) <= room ? 8 : 4;
+        if (memScrollTo) { ImGui::SetScrollY((float)(memTop / perRow) * rowH); memScrollTo = false; }
         const int pc = e->cpu->pc & 0xffff, sp = e->cpu->sp & 0xffff;
         ImGuiListClipper clip;
-        clip.Begin((size + 15) / 16, rowH);
+        clip.Begin((size + perRow - 1) / perRow, rowH);
         while (clip.Step()) {
             for (int row = clip.DisplayStart; row < clip.DisplayEnd; row++) {
-                int base = row * 16;
+                int base = row * perRow;
                 ImGui::TextDisabled(size > 0x10000 ? "%05X" : "%04X", base);
-                for (int i = 0; i < 16; i++) {
+                for (int i = 0; i < perRow; i++) {
                     int a = base + i;
                     ImGui::SameLine(0, i == 8 ? 12.0f : 6.0f);
                     ImGui::PushID(a);
@@ -385,8 +393,8 @@ void GuiShell::memoryHexContent() {
                     ImGui::PopID();
                 }
                 char text[17];
-                for (int i = 0; i < 16; i++) { int v = readAt(base + i); text[i] = (v >= 32 && v < 127) ? (char)v : '.'; }
-                text[16] = 0;
+                for (int i = 0; i < perRow; i++) { int v = readAt(base + i); text[i] = (v >= 32 && v < 127) ? (char)v : '.'; }
+                text[perRow] = 0;
                 ImGui::SameLine(0, 12.0f);
                 ImGui::TextDisabled("%s", text);
             }
@@ -398,6 +406,7 @@ void GuiShell::memoryHexContent() {
 // ============================================================== Breakpoints
 void GuiShell::breakpointsContent() {
     {
+        WrapText wrapText;                     // a child window: its text wraps here
         sectionHeading("BREAKPOINTS");
         FlowRow bp;
         bp.field(110, "##bpaddr");
@@ -525,6 +534,7 @@ void GuiShell::chipTabsVideo() {
             CRTC6845* cr = e->crtc;
             if (cr && ImGui::BeginTabItem("CRTC")) {
                 ImGui::BeginChild("##crtc");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::Text("Type %d   %s", cr->type, e->plusHardware ? "(inside the ASIC)" : "");
                 sectionHeading("COUNTERS");
                 if (beginFacts("##crtccount", 150)) {
@@ -548,11 +558,9 @@ void GuiShell::chipTabsVideo() {
                 ledGrid({ { cr->displayOutputEnabled(), "DISPEN" }, { cr->cursorOutput(), "CURSOR" } }, 110.0f);
                 ledGrid({ { cr->hsync, "HSYNC" }, { cr->vsync, "VSYNC" } }, 110.0f);
                 ImGui::TextUnformatted("MA"); ImGui::SameLine(40);
-                for (int b = 13; b >= 0; b--) { led((cr->memoryAddress() >> b) & 1); ImGui::SameLine(0, 1); }
-                ImGui::NewLine();
+                ImGui::BeginGroup(); ledRow(cr->memoryAddress(), 14); ImGui::EndGroup();
                 ImGui::TextUnformatted("RA"); ImGui::SameLine(40);
-                for (int b = 4; b >= 0; b--) { led((cr->raster >> b) & 1); ImGui::SameLine(0, 1); }
-                ImGui::NewLine();
+                ImGui::BeginGroup(); ledRow(cr->raster, 5); ImGui::EndGroup();
                 sectionHeading("REGISTERS");
                 if (ImGui::BeginTable("##crtcregs", 4, ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingFixedFit)) {
                     ImGui::TableSetupColumn("R");
@@ -572,12 +580,14 @@ void GuiShell::chipTabsVideo() {
                 }
                 ImGui::TextDisabled("The selected register is highlighted.");
                 ImGui::TextDisabled("CRTC behaviour sourced from the \"Amstrad CPC CRTC Compendium\" by Longshot (CC BY-NC-ND)");
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             GateArray* ga = e->gateArray;
             if (ga && ImGui::BeginTabItem("Gate Array")) {
                 ImGui::BeginChild("##ga");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::Text("%s", ga->model ? ga->model->name() : "Gate Array");
                 if (beginFacts("##gafacts", 150)) {
                     if (ga->newMode != ga->mode) fact("mode", "%d  (%d from the next HSYNC)", ga->mode, ga->newMode);
@@ -596,8 +606,11 @@ void GuiShell::chipTabsVideo() {
                 }
                 sectionHeading("INKS (hardware colour number)");
                 if (host.video) {
+                    FlowRow inkRow;                 // as many inks to a row as the pane has room for
+                    const float inkW = std::max(26.0f, ImGui::CalcTextSize("B :00").x);
                     for (int i = 0; i < 17; i++) {
                         ImGui::PushID(i);
+                        inkRow.place(inkW);
                         ImGui::BeginGroup();
                         ImGui::ColorButton("##ink", rgbToVec(host.video->penColor(i)), ImGuiColorEditFlags_NoTooltip | ImGuiColorEditFlags_NoDragDrop, ImVec2(26, 20));
                         if (i < 16) ImGui::Text("%2d:%02d", i, ga->gaPalette[i] & 0x1f); else ImGui::Text("B :%02d", ga->gaPalette[16] & 0x1f);
@@ -607,15 +620,16 @@ void GuiShell::chipTabsVideo() {
                             else ImGui::SetTooltip("border, hardware colour %d", ga->gaPalette[16] & 0x1f);
                         }
                         ImGui::PopID();
-                        if (i % 9 != 8 && i != 16) ImGui::SameLine();
                     }
                 }
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             CtmMonitor* mon = e->monitorRenderer;
             if (mon && ImGui::BeginTabItem("Monitor")) {
                 ImGui::BeginChild("##mon");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::Text("%s", mon->model ? mon->model->name : "CTM 640/644 (reference calibration)");
                 sectionHeading("HORIZONTAL (flywheel)");
                 if (beginFacts("##monh", 170)) {
@@ -637,12 +651,14 @@ void GuiShell::chipTabsVideo() {
                 sectionHeading("PICTURE");
                 ImGui::Text("beam  character %d  line %d", e->classicMonitorCharacter, e->classicMonitorLine);
                 ImGui::Text("refresh %.2f Hz", host.cpcRefreshHz);
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             PlusAsic* asic = e->asic;
             if (asic && e->plusHardware && ImGui::BeginTabItem("Plus ASIC")) {
                 ImGui::BeginChild("##asic");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 if (beginFacts("##asicf", 160)) {
                     fact("state", "%s", asic->locked ? "locked" : "UNLOCKED");
                     fact("ASIC page", "%s", e->memory->asicRamEnabled ? "mapped at &4000" : "not mapped");
@@ -669,18 +685,21 @@ void GuiShell::chipTabsVideo() {
                     ImGui::EndTable();
                 }
                 sectionHeading("PALETTE (inks 0-15, border, sprite pens 1-15)");
+                FlowRow palRow;                     // as many to a row as the pane has room for
                 for (int i = 0; i < 32; i++) {
                     ImGui::PushID(100 + i);
+                    palRow.place(18.0f);
                     ImGui::ColorButton("##p", rgbToVec(asic->colorValue(asic->palette[i])), ImGuiColorEditFlags_NoDragDrop, ImVec2(18, 18));
                     ImGui::PopID();
-                    if (i % 16 != 15) ImGui::SameLine();
                 }
                 sectionHeading("SPRITES");
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const float px = 3.0f;
+                FlowRow spriteRow;                  // as many to a row as the pane has room for
                 for (int s = 0; s < 16; s++) {
                     XY pos = spriteCoordinates(e->memory->asicRam, 0x2000 + s * 8);
                     int mag = asic->spriteMagnification[s];
+                    spriteRow.place(std::max(16 * px, ImGui::CalcTextSize("15 off").x));
                     ImGui::BeginGroup();
                     ImVec2 p = ImGui::GetCursorScreenPos();
                     dl->AddRectFilled(p, ImVec2(p.x + 16 * px, p.y + 16 * px), IM_COL32(20, 20, 24, 255));
@@ -695,8 +714,8 @@ void GuiShell::chipTabsVideo() {
                     ImGui::TextDisabled("%2d %s", s, (mag >> 2 & 3) && (mag & 3) ? "on" : "off");
                     ImGui::EndGroup();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("sprite %d at %d,%d  magnification x%d y%d", s, pos.x, pos.y, mag >> 2 & 3, mag & 3);
-                    if (s % 8 != 7) ImGui::SameLine();
                 }
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -751,6 +770,7 @@ void GuiShell::chipTabsIo() {
             AY38912* ay = e->ay;
             if (ay && ImGui::BeginTabItem("PSG")) {
                 ImGui::BeginChild("##psg");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::TextDisabled("AY-3-8912, 1 MHz");
                 const auto& r = ay->registers;
                 const char* ch = "ABC";
@@ -789,12 +809,14 @@ void GuiShell::chipTabsIo() {
                     ImGui::EndTable();
                 }
                 ImGui::TextDisabled("The selected register is highlighted.");
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             PPI8255* ppi = e->ppi;
             if (ppi && ImGui::BeginTabItem("PPI")) {
                 ImGui::BeginChild("##ppi");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::TextDisabled("8255 PPI");
                 int portB = ppi->read(0xf500);
                 if (beginFacts("##ppif", 150)) {
@@ -815,12 +837,14 @@ void GuiShell::chipTabsIo() {
                 ImGui::Text("keyboard row %d", ppi->portC & 15);
                 ledGrid({ { ppi->portC & 0x10, "cassette motor" }, { ppi->portC & 0x20, "cassette out" } }, 160.0f);
                 ImGui::Text("PSG bus: %s", psgFunction[(ppi->portC >> 6) & 3]);
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             KeyboardMatrix* kb = e->keyboard;
             if (kb && ImGui::BeginTabItem("Keyboard")) {
                 ImGui::BeginChild("##kbd");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::TextDisabled("The matrix as the PPI scans it; lit = pressed.");
                 if (ImGui::BeginTable("##matrix", 9, ImGuiTableFlags_Borders | ImGuiTableFlags_SizingFixedFit)) {
                     ImGui::TableSetupColumn("row");
@@ -840,11 +864,13 @@ void GuiShell::chipTabsIo() {
                     ImGui::EndTable();
                 }
                 ImGui::TextDisabled("The row the PPI is selecting is highlighted.");
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             if (ImGui::BeginTabItem("Disc")) {
                 ImGui::BeginChild("##fdc");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 ImGui::TextDisabled("uPD765A disc controller");
                 if (e->hasFdc && e->fdc) {
                     UPD765A* fd = e->fdc;
@@ -877,12 +903,14 @@ void GuiShell::chipTabsIo() {
                 } else {
                     ImGui::TextDisabled("This machine has no disc controller.");
                 }
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
             CPCTapeDrive* tape = e->tape;
             if (tape && ImGui::BeginTabItem("Tape")) {
                 ImGui::BeginChild("##tape");
+                ImGui::PushTextWrapPos(0.0f);    // the pane is a child window: its text wraps here
                 if (beginFacts("##tapef", 150)) {
                     fact("tape", "%s", tape->loaded ? tape->name.c_str() : "(none)");
                     if (tape->loaded) {
@@ -896,6 +924,7 @@ void GuiShell::chipTabsIo() {
                     endFacts();
                 }
                 tapeDeckControls(false);   // the same deck as the Media window's
+                ImGui::PopTextWrapPos();
                 ImGui::EndChild();
                 ImGui::EndTabItem();
             }
@@ -914,12 +943,24 @@ void GuiShell::windowDebugger() {
         const float avail = ImGui::GetContentRegionAvail().y;
         if (debuggerTopH <= 0) debuggerTopH = avail * 0.68f;
         debuggerTopH = std::clamp(debuggerTopH, 120.0f, std::max(120.0f, avail - 60.0f));
-        ImGui::BeginChild("##dbgtop", ImVec2(0, debuggerTopH), ImGuiChildFlags_ResizeY, ImGuiWindowFlags_NoScrollbar);
-        ImGui::BeginChild("##dbgregs", ImVec2(ImGui::GetFontSize() * 18.0f, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
-        cpuContent();
-        ImGui::EndChild();
-        ImGui::SameLine();
-        ImGui::BeginChild("##dbgcode", ImVec2(0, 0), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        // The registers beside the disassembly when the window has room for both (a
+        // disassembly line is about 34 characters), else the registers above it.
+        const float regsW = ImGui::GetFontSize() * 18.0f;
+        const float codeW = ImGui::CalcTextSize("0000  00 00 00 00  LD   HL,(&0000)").x + ImGui::GetStyle().WindowPadding.x * 4.0f;
+        const bool beside = ImGui::GetContentRegionAvail().x >= regsW + ImGui::GetStyle().ItemSpacing.x + codeW;
+        ImGui::BeginChild("##dbgtop", ImVec2(0, debuggerTopH), ImGuiChildFlags_ResizeY, beside ? ImGuiWindowFlags_NoScrollbar : 0);
+        if (beside) {
+            ImGui::BeginChild("##dbgregs", ImVec2(regsW, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_ResizeX);
+            cpuContent();
+            ImGui::EndChild();
+            ImGui::SameLine();
+        } else {
+            ImGui::BeginChild("##dbgregs", ImVec2(0, 0), ImGuiChildFlags_Borders | ImGuiChildFlags_AutoResizeY);
+            cpuContent();
+            ImGui::EndChild();
+        }
+        const float codeH = beside ? 0.0f : std::max(ImGui::GetContentRegionAvail().y, ImGui::GetTextLineHeightWithSpacing() * 10.0f);
+        ImGui::BeginChild("##dbgcode", ImVec2(0, codeH), ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
         disassemblyContent();
         ImGui::EndChild();
         debuggerTopH = ImGui::GetWindowHeight();

@@ -448,7 +448,7 @@ void AssemblerWindow::draw(bool* open) {
         }
         std::snprintf(label, sizeof(label), "Symbols (%d)###syms", (int)symbols.size());
         if (ImGui::BeginTabItem(label)) {
-            ImGui::SetNextItemWidth(200);
+            fitNextItemWidth(200, "##symfilter");
             ImGui::InputTextWithHint("##symfilter", "filter", symbolFilter, sizeof(symbolFilter));
             after().textDisabled("click a symbol to show it in the disassembly");
             if (ImGui::BeginTable("##symtab", 2, ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV |

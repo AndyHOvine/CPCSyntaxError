@@ -374,7 +374,7 @@ void GuiShell::gfxInternalsTabs() {
         if (ImGui::BeginTabItem("VRAM image", nullptr, tabFlags(3))) {
             const int w = v->imageViewWidth(), h = v->imageViewHeight();
             const bool layers = v->mode() == V9990Mode::P1;
-            ImGui::SetNextItemWidth(120);
+            fitNextItemWidth(120, "Zoom");
             ImGui::SliderInt("Zoom", &gfxVramZoom, 1, 4);
             {
                 char l[128];
@@ -416,7 +416,7 @@ void GuiShell::gfxInternalsTabs() {
         }
         // ------------------------------------------------------ VRAM bytes
         if (ImGui::BeginTabItem("VRAM bytes", nullptr, tabFlags(4))) {
-            ImGui::SetNextItemWidth(120);
+            fitNextItemWidth(120, "##v99goto");
             bool jump = ImGui::InputTextWithHint("##v99goto", "address (hex)", gfxVramGoto, sizeof gfxVramGoto,
                                                  ImGuiInputTextFlags_CharsHexadecimal | ImGuiInputTextFlags_EnterReturnsTrue);
             {

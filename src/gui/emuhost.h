@@ -169,6 +169,12 @@ public:
     // (the 6128 Plus's banking), so 128K software runs. Changing it restarts the cartridge.
     bool gx4000Ram128 = false;
     void setGx4000Ram128(bool on);
+    // A PLUS'S RAM BEYOND ITS OWN (GXMemory::classicExpansion): a classic board on the
+    // expansion port (true: writes under the ASIC's page reach its RAM too, as on the real
+    // machine) or an internal upgrade (false: it behaves as the Plus's own RAM). Changing it
+    // restarts a Plus.
+    bool plusExpansionClassic = true;
+    void setPlusExpansionClassic(bool classic);
     std::string snapshotName;               // the .SNA last loaded ("" once the machine reboots)
 
     // firmware ROM overrides (empty = auto-find by keyword). Let the user see
@@ -292,6 +298,18 @@ public:
     void reset();
     void stepInstruction(bool redraw = true);   // false: leave the picture to the caller (many steps)
     void runFrame();                         // advance one frame + drain audio
+    // TYPING: text typed on the CPC's keyboard by runFrame, a key at a time (held 4 frames,
+    // let go for 4); "\n" is Enter. A character no key types is skipped.
+    void typeText(const std::string& text) { typed += text; }
+    bool typing() const { return typedAt < typed.size(); }
+    // THE BASIC PROGRAM (core/basic.h). basicProgramEnd: where the program at &0170 ends, and
+    // whether BASIC 1.0 (the 464) or 1.1 holds it -- told by which of BASIC's pointers holds
+    // that end; false when neither does (BASIC is not at its prompt). injectBasic: a
+    // tokenized program (BasicDecoder::tokenizeProgram) written at &0170 and BASIC's
+    // pointers set to its end, as if it had been typed; false and `why` when BASIC is not at
+    // its prompt or the program is too long.
+    bool basicProgramEnd(int& end, bool& basic10) const;
+    bool injectBasic(const Bytes& program, std::string& why);
     uint64_t framesRun = 0;                  // frames runFrame has run (not counting paused calls)
 
     // Debugger hooks. A breakpoint, a watchpoint or a reached step target stops the
@@ -391,6 +409,9 @@ public:
     static Bytes readFile(const std::string& path, bool& ok);
 
 private:
+    std::string typed;                       // typeText's queue, the character at typedAt next
+    size_t typedAt = 0;
+    int typedPhase = 0;                      // 0-3 the key is down, 4-7 up
     void drainAudio();
     void applySettings();                    // re-apply region/joystick/DAC after a boot
     void applyExpansionRoms();               // re-fit slot ROMs after a boot

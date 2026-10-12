@@ -157,7 +157,10 @@ public:
     void captureRasterCharacter();
     unsigned classicHsyncPipe = 0;   // ACCC §9.3.1's per-chip HSYNC display delay
 
-    struct LoadCartridgeOptions { bool plusComputer = false; int ramKiB = -1; bool ram128 = false; };
+    // internalRamKiB: the machine's own RAM (64 on a 464 Plus or GX4000, 128 on a 6128 Plus or
+    // a GX4000 with the 128K mod); classicExpansion: RAM beyond it is a board on the
+    // expansion port (GXMemory::classicExpansion), else an internal upgrade.
+    struct LoadCartridgeOptions { bool plusComputer = false; int ramKiB = -1; bool ram128 = false; int internalRamKiB = -1; bool classicExpansion = true; };
     void loadCartridge(const Cartridge& cartridge, LoadCartridgeOptions options);
     void loadCartridge(const Cartridge& cartridge);
     struct LoadClassicOptions { Bytes lowerRom; Bytes basicRom; Bytes amsdosRom; int ramKiB = -1; bool ram128 = false; int crtcType = 0; std::string model = "CPC"; };

@@ -1,7 +1,9 @@
 // CPCSyntaxError — Locomotive BASIC decoder.
 #include "basic.h"
 #include <cstdio>
+#include <cctype>
 #include <cstdlib>
+#include <cstring>
 
 namespace cpcse {
 
@@ -23,7 +25,7 @@ BasicDecoder::BasicDecoder() {
         "ENT","ENV","ERASE","ERROR","EVERY","FOR","GOSUB","GOTO","IF","INK",
         "INPUT","KEY","LET","LINE","LIST","LOAD","LOCATE","MEMORY","MERGE",
         "MID$","MODE","MOVE","MOVER","NEXT","NEW","ON","ON BREAK","ON ERROR GOTO",
-        "SQ","OPENIN","OPENOUT","ORIGIN","OUT","PAPER","PEN","PLOT","PLOTR",
+        "ON SQ","OPENIN","OPENOUT","ORIGIN","OUT","PAPER","PEN","PLOT","PLOTR",
         "POKE","PRINT","'","RAD","RANDOMIZE","READ","RELEASE","REM","RENUM",
         "RESTORE","RESUME","RETURN","RUN","SAVE","SOUND","SPEED","STOP","SYMBOL",
         "TAG","TAGOFF","TROFF","TRON","WAIT","WEND","WHILE","WIDTH","WINDOW",
@@ -35,7 +37,8 @@ BasicDecoder::BasicDecoder() {
     const char* first[] = { "ABS","ASC","ATN","CHR$","CINT","COS","CREAL","EXP","FIX","FRE","INKEY","INP","INT","JOY","LEN","LOG","LOG10","LOWER$","PEEK","REMAIN","SGN","SIN","SPACE$","SQ","SQR","STR$","TAN","UNT","UPPER$","VAL" };
     for (int i = 0; i < 30; i++) add[i] = first[i];
     add[64] = "EOF"; add[65] = "ERR"; add[66] = "HIMEM"; add[67] = "INKEY$"; add[68] = "PI"; add[69] = "RND"; add[70] = "TIME"; add[71] = "XPOS"; add[72] = "YPOS"; add[73] = "DERR";
-    add[112] = "BIN$"; add[113] = "DEC$"; add[114] = "HEX$"; add[115] = "INSTR"; add[116] = "LEFT$"; add[117] = "MAX"; add[118] = "MIN"; add[119] = "POS"; add[120] = "RIGHT$"; add[121] = "ROUND"; add[122] = "STRING$"; add[123] = "TEST"; add[124] = "TESTR"; add[125] = "COPYCHR$"; add[126] = "VPOS";
+    // &FF71-&FF7F (BASIC itself stores LEFT$ as &FF75, HEX$ as &FF73: cpcse-basic-check)
+    add[113] = "BIN$"; add[114] = "DEC$"; add[115] = "HEX$"; add[116] = "INSTR"; add[117] = "LEFT$"; add[118] = "MAX"; add[119] = "MIN"; add[120] = "POS"; add[121] = "RIGHT$"; add[122] = "ROUND"; add[123] = "STRING$"; add[124] = "TEST"; add[125] = "TESTR"; add[126] = "COPYCHR$"; add[127] = "VPOS";
     AdditionalKeywords = add;
 }
 
@@ -119,6 +122,226 @@ std::string BasicDecoder::decodeLine(const std::function<int(int)>& read, int st
         }
     }
     return result;
+}
+
+// ======================================================================= the tokenizer
+
+static bool isLetter(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'); }
+static bool isDigit(char c) { return c >= '0' && c <= '9'; }
+static char upperChar(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+
+// BASIC's five-byte real: a 32-bit mantissa (its top bit, always 1, holds the sign) and an
+// exponent biased by 128; the value is 0.1mmm... x 2^(exponent-128). 0 is all zeros.
+static void putReal(Bytes& out, double v) {
+    if (v == 0.0) { for (int i = 0; i < 5; i++) out.push_back(0); return; }
+    const bool negative = v < 0;
+    v = std::fabs(v);
+    int e = (int)std::floor(std::log2(v));
+    double f = v / std::ldexp(1.0, e);                 // 1 <= f < 2
+    if (f >= 2.0) { f /= 2.0; e++; }
+    if (f < 1.0) { f *= 2.0; e--; }
+    double m = std::floor((f - 1.0) * 2147483648.0 + 0.5);
+    if (m >= 2147483648.0) { m = 0; e++; }
+    const uint32_t mant = (uint32_t)m;
+    out.push_back((uint8_t)(mant & 0xff));
+    out.push_back((uint8_t)(mant >> 8 & 0xff));
+    out.push_back((uint8_t)(mant >> 16 & 0xff));
+    out.push_back((uint8_t)((mant >> 24 & 0x7f) | (negative ? 0x80 : 0)));
+    out.push_back((uint8_t)(e + 129));
+}
+
+Bytes BasicDecoder::tokenizeLine(const std::string& text, std::string& error) const {
+    error.clear();
+    size_t i = 0;
+    const size_t n = text.size();
+    while (i < n && text[i] == ' ') i++;
+    if (i >= n || !isDigit(text[i])) { error = "a line must start with its number"; return {}; }
+    long number = 0;
+    while (i < n && isDigit(text[i])) { number = number * 10 + (text[i] - '0'); if (number > 65535) break; i++; }
+    if (number < 1 || number > 65535) { error = "the line number must be 1 to 65535"; return {}; }
+    if (i < n && text[i] == ' ') i++;                  // the space after the number is not kept
+
+    // the keywords: statements &80-&FE, functions &FF nn
+    auto keyword = [&](const std::string& word, int& token, bool& function) {
+        for (size_t k = 0; k < Keywords.size(); k++)
+            if (!Keywords[k].empty() && Keywords[k] == word && isLetter(word[0])) { token = 0x80 + (int)k; function = false; return true; }
+        for (size_t k = 0; k < AdditionalKeywords.size(); k++)
+            if (!AdditionalKeywords[k].empty() && AdditionalKeywords[k] == word) { token = (int)k; function = true; return true; }
+        return false;
+    };
+    auto tokenOf = [&](const char* word) {
+        for (size_t k = 0; k < Keywords.size(); k++) if (Keywords[k] == word) return 0x80 + (int)k;
+        return -1;
+    };
+    // after these, a number is a line number (and stays one across "," and "-")
+    static const char* LINE_WORDS[] = { "GOTO", "GOSUB", "THEN", "ELSE", "RESTORE", "RUN", "LIST", "DELETE", "EDIT", "RENUM", "AUTO", "RESUME" };
+
+    Bytes out;
+    bool lineNumbers = false;
+    while (i < n) {
+        const char c = text[i];
+        if (c == '"') {                                // a string, as typed
+            out.push_back((uint8_t)c); i++;
+            while (i < n) { out.push_back((uint8_t)text[i]); if (text[i++] == '"') break; }
+            continue;
+        }
+        if (c == ':') { out.push_back(0x01); i++; lineNumbers = false; continue; }
+        if (c == '\'') {                               // a comment: ' is ":REM", the rest as typed
+            out.push_back(0x01); out.push_back(0xc0); i++;
+            while (i < n) out.push_back((uint8_t)text[i++]);
+            break;
+        }
+        if (c == '|') {                                // an RSX: its name, the last letter marked
+            out.push_back(0x7c); out.push_back(0x00); i++;
+            size_t start = i;
+            while (i < n && (isLetter(text[i]) || isDigit(text[i]) || text[i] == '.')) i++;
+            for (size_t k = start; k < i; k++) out.push_back((uint8_t)(upperChar(text[k]) | (k + 1 == i ? 0x80 : 0)));
+            lineNumbers = false;
+            continue;
+        }
+        if (isDigit(c) || (c == '.' && i + 1 < n && isDigit(text[i + 1]))) {
+            size_t start = i;
+            while (i < n && isDigit(text[i])) i++;
+            bool real = false;
+            if (i < n && text[i] == '.') { real = true; i++; while (i < n && isDigit(text[i])) i++; }
+            if (i < n && (text[i] == 'E' || text[i] == 'e')) {
+                size_t j = i + 1;
+                if (j < n && (text[j] == '+' || text[j] == '-')) j++;
+                if (j < n && isDigit(text[j])) { real = true; i = j; while (i < n && isDigit(text[i])) i++; }
+            }
+            const std::string num = text.substr(start, i - start);
+            const double v = std::strtod(num.c_str(), nullptr);
+            if (lineNumbers && !real && v <= 65535) {
+                out.push_back(0x1e); out.push_back((uint8_t)((int)v & 0xff)); out.push_back((uint8_t)((int)v >> 8));
+            } else if (!real && v <= 9) out.push_back((uint8_t)(0x0e + (int)v));
+            else if (!real && v <= 255) { out.push_back(0x19); out.push_back((uint8_t)v); }
+            else if (!real && v <= 32767) { out.push_back(0x1a); out.push_back((uint8_t)((int)v & 0xff)); out.push_back((uint8_t)((int)v >> 8)); }
+            else { out.push_back(0x1f); putReal(out, v); }
+            continue;
+        }
+        if (c == '&') {                                // &hex, &Hhex, &Xbinary
+            size_t j = i + 1;
+            const bool binary = j < n && (text[j] == 'X' || text[j] == 'x');
+            if (binary || (j < n && (text[j] == 'H' || text[j] == 'h'))) j++;
+            long v = 0;
+            size_t digits = j;
+            while (j < n && (binary ? (text[j] == '0' || text[j] == '1') : std::isxdigit((unsigned char)text[j]))) {
+                v = v * (binary ? 2 : 16) + (isDigit(text[j]) ? text[j] - '0' : (upperChar(text[j]) - 'A' + 10));
+                j++;
+            }
+            if (j > digits) {
+                out.push_back(binary ? 0x1b : 0x1c); out.push_back((uint8_t)(v & 0xff)); out.push_back((uint8_t)(v >> 8 & 0xff));
+                i = j;
+                continue;
+            }
+        }
+        if (isLetter(c)) {
+            size_t start = i;
+            while (i < n && (isLetter(text[i]) || isDigit(text[i]) || text[i] == '.')) i++;
+            std::string word;
+            for (size_t k = start; k < i; k++) word += upperChar(text[k]);
+            if (i < n && text[i] == '$') {             // CHR$, MID$ ...
+                int t; bool f;
+                if (keyword(word + "$", t, f)) { word += "$"; i++; }
+            }
+            // the phrases ON BREAK and ON SQ are one token each (ON ERROR GOTO, typed, is
+            // three: ON, ERROR, GOTO)
+            if (word == "ON") {
+                size_t j = i;
+                while (j < n && text[j] == ' ') j++;
+                auto follows = [&](const char* w) {
+                    size_t k = j;
+                    for (const char* p = w; *p; p++, k++) {
+                        if (*p == ' ') { if (k >= n || text[k] != ' ') return (size_t)0; while (k + 1 < n && text[k + 1] == ' ') k++; continue; }
+                        if (k >= n || upperChar(text[k]) != *p) return (size_t)0;
+                    }
+                    return k;
+                };
+                size_t e;
+                if ((e = follows("BREAK")) != 0) { out.push_back((uint8_t)tokenOf("ON BREAK")); i = e; lineNumbers = false; continue; }
+                if ((e = follows("SQ")) != 0) { out.push_back((uint8_t)tokenOf("ON SQ")); i = e; lineNumbers = false; continue; }
+            }
+            int token; bool function;
+            if (keyword(word, token, function)) {
+                if (function) { out.push_back(0xff); out.push_back((uint8_t)token); lineNumbers = false; continue; }
+                if (word == "ELSE") out.push_back(0x01);       // ELSE is stored after a ':'
+                out.push_back((uint8_t)token);
+                if (word == "REM") { while (i < n) out.push_back((uint8_t)text[i++]); break; }
+                if (word == "DATA") {                          // the data, as typed, to the end of the statement
+                    bool quoted = false;
+                    while (i < n && (quoted || text[i] != ':')) { if (text[i] == '"') quoted = !quoted; out.push_back((uint8_t)text[i++]); }
+                    continue;
+                }
+                lineNumbers = false;
+                for (const char* w : LINE_WORDS) if (word == w) lineNumbers = true;
+                continue;
+            }
+            // FNname: the FN token, then the name as a variable
+            if (word.size() > 2 && word.compare(0, 2, "FN") == 0) {
+                out.push_back((uint8_t)tokenOf("FN"));
+                start += 2;
+                word.erase(0, 2);
+            }
+            // a variable: its type from the suffix, a 2-byte slot BASIC fills when it runs,
+            // the name as typed with its last character marked
+            int type = 0x0d;
+            if (i < n && text[i] == '%') { type = 0x02; i++; }
+            else if (i < n && text[i] == '$') { type = 0x03; i++; }
+            else if (i < n && text[i] == '!') { type = 0x04; i++; }
+            out.push_back((uint8_t)type); out.push_back(0); out.push_back(0);
+            const size_t end = start + word.size();
+            for (size_t k = start; k < end; k++) out.push_back((uint8_t)(text[k] | (k + 1 == end ? 0x80 : 0)));
+            lineNumbers = false;
+            continue;
+        }
+        // operators
+        auto op = [&](const char* s) { return text.compare(i, std::strlen(s), s) == 0; };
+        const char* ops[] = { "<>", "<=", ">=", ">", "=", "<", "+", "-", "*", "/", "^", "\\" };
+        bool done = false;
+        for (const char* o : ops)
+            if (op(o)) {
+                out.push_back((uint8_t)tokenOf(o));
+                i += std::strlen(o);
+                done = true;
+                if (std::strcmp(o, "-") != 0) lineNumbers = false;   // LIST 10-20: still line numbers
+                break;
+            }
+        if (done) continue;
+        if (c != ' ' && c != ',') lineNumbers = false;  // ON x GOTO 10,20: still line numbers
+        out.push_back((uint8_t)c);
+        i++;
+    }
+    out.push_back(0x00);
+    const int length = (int)out.size() + 4;
+    if (length > 255 + 4) { error = "the line is longer than BASIC allows"; return {}; }
+    Bytes line = { (uint8_t)(length & 0xff), (uint8_t)(length >> 8), (uint8_t)(number & 0xff), (uint8_t)(number >> 8) };
+    line.insert(line.end(), out.begin(), out.end());
+    return line;
+}
+
+Bytes BasicDecoder::tokenizeProgram(const std::string& text, std::string& error) const {
+    error.clear();
+    std::map<int, Bytes> lines;
+    size_t at = 0;
+    int lineNo = 0;
+    while (at <= text.size()) {
+        size_t end = text.find('\n', at);
+        if (end == std::string::npos) end = text.size();
+        std::string s = text.substr(at, end - at);
+        if (!s.empty() && s.back() == '\r') s.pop_back();
+        lineNo++;
+        if (s.find_first_not_of(" \t") != std::string::npos) {
+            std::string why;
+            Bytes b = tokenizeLine(s, why);
+            if (b.empty()) { error = "line " + std::to_string(lineNo) + ": " + why; return {}; }
+            lines[b[2] | b[3] << 8] = b;
+        }
+        at = end + 1;
+    }
+    Bytes out;
+    for (auto& [num, b] : lines) out.insert(out.end(), b.begin(), b.end());
+    out.push_back(0); out.push_back(0);
+    return out;
 }
 
 std::vector<BasicLine> BasicDecoder::listProgram(const std::function<int(int)>& read, int startAddr) {
