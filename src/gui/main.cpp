@@ -689,6 +689,11 @@ int main(int argc, char** argv) {
     host.crtEffect      = geti("crt", 0) != 0;
     host.crtScanline    = level("crtscanline", 0.5, 0.0, 1.0);
     host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
+    host.crtPattern     = gets("crtpattern", "auto");
+    if (host.crtPattern != "slot" && host.crtPattern != "scanlines" && host.crtPattern != "none") host.crtPattern = "auto";
+    host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
+    host.crtMaskSize    = std::clamp(geti("crtmasksize", 1), 1, 4);
+    host.crtMaskTurned  = geti("crtmaskturned", 0) != 0;
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
@@ -987,6 +992,10 @@ int main(int argc, char** argv) {
             f << "crt=" << (host.crtEffect ? 1 : 0) << "\n";
             f << "crtscanline=" << host.crtScanline << "\n";
             f << "crtbloom=" << host.crtBloom << "\n";
+            f << "crtpattern=" << host.crtPattern << "\n";
+            f << "crtmask=" << host.crtMask << "\n";
+            f << "crtmasksize=" << host.crtMaskSize << "\n";
+            f << "crtmaskturned=" << (host.crtMaskTurned ? 1 : 0) << "\n";
             f << "aspect=" << (host.maintainAspect ? 1 : 0) << "\n";
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";

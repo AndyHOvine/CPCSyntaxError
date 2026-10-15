@@ -1186,6 +1186,13 @@ bool EmuHost::loadSnapshot(const std::string& path) {
     return true;
 }
 
+bool EmuHost::crtSlotMask() const {
+    return crtPattern == "slot" || (crtPattern == "auto" && video && video->monitorColourTube);
+}
+bool EmuHost::crtScanlines() const {
+    return crtPattern == "scanlines" || (crtPattern == "auto" && !(video && video->monitorColourTube));
+}
+
 void EmuHost::setPlusExpansionClassic(bool classic) {
     plusExpansionClassic = classic;
     if (emu && emu->memory) { emu->memory->classicExpansion = classic; emu->memory->remapRam(); }   // live: no restart needed

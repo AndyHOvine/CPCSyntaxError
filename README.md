@@ -48,6 +48,10 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   as the pots on a real monitor (**Video → Monitor**). Turn V. Hold too far and the picture
   rolls. Turn H. Hold too far and the picture breaks into diagonal bars. **Centre both** sets
   the default again.
+- **The CRT effect** (**Video → CRT effect**) shows the tube's own pattern: the slot mask of
+  the colour sets (the CTM's tube is a slot-mask tube), with each red, green or blue phosphor
+  slot lit as a whole, and scanlines on the green and grey sets. You can choose the pattern,
+  its strength and size, and turn the mask 90 degrees. A bloom adds a glow.
 - **The Z80** passes ZEXDOC, ZEXALL and all the tests of z80test 1.2a by Patrik Rak. This
   includes the undocumented flags, MEMPTR, SCF/CCF on a Zilog chip and interrupted block
   instructions.
@@ -72,7 +76,7 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   - A seek takes the step rate that the program sets.
   - The drive is ready when the disc turns at full speed.
   - A program that is too slow for the bytes gets an overrun, as on a real CPC.
-- **The tape deck** is in the Media window and in Media → Tape. It has a counter with a reset,
+- **The tape deck** is in the Tape window and in Media → Tape. It has a counter with a reset,
   the time and the block of the tape, and a list of the blocks. Its buttons are rewind, back a
   block, play, record, pause, stop, fast forward and eject. It reads CDT, TZX, TAP and WAV.
   - **Record**: the deck records the output of SAVE. It records from the current position,
@@ -188,8 +192,9 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 
 - The windows dock and change size (Dear ImGui, docking branch). You can move each window out
   of the main window.
-- At the start, only the screen, the machine and the media windows are open. Open the other
-  windows from the menus. They dock with their group.
+- At the start, only the screen, the Machine and ROMs windows and the media windows (Discs,
+  Tape, Cartridge, Snapshot, as tabs) are open. Open the other windows from the menus. They
+  dock with their group.
 - Use **Window → Interface size** to make the interface larger (90% to 200%).
 - The file picker shows all the drives (C:, D: and more on Windows). You can type a folder
   name into it. The Save dialog works the same way. Files with all types of names open,

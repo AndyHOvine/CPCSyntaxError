@@ -156,9 +156,19 @@ public:
     bool integerScale = false;
     bool maintainAspect = true;
     bool fullscreen = false;
-    bool crtEffect = false;      // scanlines + bloom overlay
+    bool crtEffect = false;      // the tube's pattern + bloom overlay
     float crtScanline = 0.5f;
     float crtBloom = 0.2f;
+    // THE TUBE'S PATTERN: "auto" (as the set: a colour tube has a slot mask -- its phosphors
+    // are stripes behind slots -- and a green or grey tube shows scanlines), "slot",
+    // "scanlines" or "none". crtMask is the mask's strength (0..1), crtMaskSize the width of
+    // one phosphor stripe in screen pixels (the tube's pitch is not printed in the manuals).
+    std::string crtPattern = "auto";
+    float crtMask = 0.5f;
+    int crtMaskSize = 1;
+    bool crtMaskTurned = false;          // the mask turned 90 degrees: stripes across
+    bool crtSlotMask() const;
+    bool crtScanlines() const;
 
     // media state (for display)
     std::string diskName[2];

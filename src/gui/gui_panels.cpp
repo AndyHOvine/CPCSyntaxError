@@ -176,6 +176,18 @@ void GuiShell::sectionVideo(bool asMenu) {
     if (asMenu) ImGui::Separator(); else sectionHeading("CRT effect");
     ImGui::Checkbox("CRT effect", &host.crtEffect);
     ImGui::BeginDisabled(!host.crtEffect);
+    static const Choice patterns[] = {
+        { "As the set", "auto", "A colour set (CTM 640/644, CM14) has a slot mask;\na green or grey set (GT 64/65, MM12) shows scanlines." },
+        { "Slot mask", "slot", "The phosphor stripes and slots of a colour tube" },
+        { "Scanlines", "scanlines", "Dark lines between the CPC's lines" },
+        { "None", "none", nullptr } };
+    choiceRow(asMenu, patterns, host.crtPattern, [this](const char* v) { host.crtPattern = v; });
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##mask", &host.crtMask, 0.0f, 1.0f, "slot mask %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderInt("##masksize", &host.crtMaskSize, 1, 4, "stripe %d px");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The width of one phosphor stripe on your screen: a triad is three.");
+    if (asMenu) ImGui::MenuItem("Turn the mask 90 degrees", nullptr, &host.crtMaskTurned);
+    else checkboxWrapped("Turn the mask 90 degrees", &host.crtMaskTurned);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The stripes across the screen and the slots in rows,\nnot the stripes up and down.");
     ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##scan", &host.crtScanline, 0.0f, 1.0f, "scanlines %.2f");
     ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##bloom", &host.crtBloom, 0.0f, 1.0f, "bloom %.2f");
     ImGui::EndDisabled();

@@ -43,7 +43,11 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     panels = {
         { "Screen", "win_screen", true, true },
         { "Machine", "win_machine", true, true },
-        { "Media", "win_media", true, true },
+        { "ROMs", "win_roms", true, true },
+        { "Discs", "win_discs", true, true },
+        { "Tape", "win_tape", true, true },
+        { "Cartridge", "win_cartridge", true, true },
+        { "Snapshot", "win_snapshot", true, true },
         { "Debugger", "win_debugger", false, false },
         { "Chips", "win_chips", false, false },
         { "Memory", "win_memory", false, false },
@@ -235,9 +239,11 @@ void GuiShell::buildDefaultLayout(unsigned id) {
     ImGuiID left = ImGui::DockBuilderSplitNode(center, ImGuiDir_Left, 0.22f, nullptr, &center);
     ImGuiID leftBottom = ImGui::DockBuilderSplitNode(left, ImGuiDir_Down, 0.45f, nullptr, &left);
     ImGui::DockBuilderDockWindow("Screen", center);
+    ImGui::DockBuilderDockWindow("ROMs", left);      // a tab beside Machine (the last docked is in front)
     ImGui::DockBuilderDockWindow("Machine", left);
-    ImGui::DockBuilderDockWindow("Media", leftBottom);
+    for (const char* w : MEDIA_WINDOWS) ImGui::DockBuilderDockWindow(w, leftBottom);   // tabs
     ImGui::DockBuilderFinish(id);
+    focusWindowNextFrame = MEDIA_WINDOWS[0];   // Discs the tab in front
     // what was placed before goes back to its group when next opened
     placedThisSession.clear();
     groupNode[0] = groupNode[1] = 0;
@@ -251,10 +257,15 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
         { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
         { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
+        // the media windows: tabs together, below the Machine window (a layout saved before
+        // they were windows of their own has only "Media")
+        { { "Discs", "Tape", "Cartridge", "Snapshot" }, ImGuiDir_Down, 0.45f },
+        // the ROMs: a tab beside the Machine window (it was a section of it)
+        { { "ROMs" }, ImGuiDir_None, 0.0f },
     };
     auto placed = [&](const char* t) { return std::find(placedThisSession.begin(), placedThisSession.end(), t) != placedThisSession.end(); };
     bool changed = false;
-    for (int gi = 0; gi < 2; gi++) {
+    for (int gi = 0; gi < 4; gi++) {
         const Group& g = groups[gi];
         for (const char* t : g.titles) {
             if (!panelOpen(t)) { placedThisSession.erase(std::remove(placedThisSession.begin(), placedThisSession.end(), t), placedThisSession.end()); continue; }
@@ -268,6 +279,15 @@ void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
                 ImGuiWindow* w = ImGui::FindWindowByName(other);
                 if (other != t && w && w->DockNode && panelOpen(other)) { target = w->DockNode->ID; break; }
             }
+            if (!target && gi == 3) {
+                if (ImGuiWindow* machine = ImGui::FindWindowByName("Machine"); machine && machine->DockNode) target = machine->DockNode->ID;
+                else continue;                 // the Machine window is not docked: the ROMs window floats
+            }
+            if (!target && gi == 2)
+                if (ImGuiWindow* machine = ImGui::FindWindowByName("Machine"); machine && machine->DockNode) {
+                    ImGuiID rest = 0;
+                    target = ImGui::DockBuilderSplitNode(machine->DockNode->ID, g.dir, g.ratio, nullptr, &rest);
+                }
             if (!target) {
                 ImGuiDockNode* central = ImGui::DockBuilderGetCentralNode(dockspaceId);
                 if (!central) continue;
@@ -331,9 +351,23 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
             }
         } else
         dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
-        // CRT effect: a scanline overlay (dark lines every 2 source rows) and a faint bloom.
+        // CRT effect: the tube's pattern -- a slot mask on a colour tube, scanlines (dark lines
+        // every 2 source rows) on a green or grey one, or as chosen -- and a faint bloom.
         // Cheap, and off unless turned on.
         if (host.crtEffect && !gfxOnMain) {
+            if (host.crtSlotMask() && host.crtMask > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
+                // the picture through the slot mask, each phosphor slot lit whole, at the
+                // picture's drawn size (to 2560 x 2048), over the plain picture
+                const int w = std::min(2560, (int)std::lround(drawW)), h = std::min(2048, (int)std::lround(drawH));
+                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned };
+                if (!maskTexture || !(key == maskKey)) {
+                    slotMaskRender(host.video->pixels.data(), host.video->width, host.video->height, w, h, host.crtMask,
+                                   host.crtMaskSize, host.crtMaskTurned, maskPixels);
+                    maskTexture = uploadTexture(4, maskPixels.data(), w, h);
+                    maskKey = key;
+                }
+                dl->AddImage((ImTextureID)(intptr_t)maskTexture, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+            }
             if (host.crtBloom > 0.001f) {
                 // A glow round each bright pixel: the picture again, offset the same distance
                 // in eight directions, so the light spreads evenly and stays centred on its
@@ -349,7 +383,7 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
                                  ImVec2(0, 0), ImVec2(1, 1), IM_COL32(255, 255, 255, a));
                 if (additiveBlend) dl->AddCallback(ImDrawCallback_ResetRenderState, nullptr);
             }
-            if (host.crtScanline > 0.001f) {
+            if (host.crtScanlines() && host.crtScanline > 0.001f) {
                 ImU32 col = IM_COL32(0, 0, 0, (int)(host.crtScanline * 150.0f));
                 float step = drawH / (float)info.textureHeight * 2.0f;
                 if (step >= 2.0f)
@@ -806,7 +840,14 @@ void GuiShell::menuWindow() {
     if (!ImGui::BeginMenu("Window")) return;
     ImGui::MenuItem("Screen", nullptr, &panelOpen("Screen"));
     ImGui::Separator();
-    for (const char* w : { "Machine", "Media" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    ImGui::MenuItem("Machine", nullptr, &panelOpen("Machine"));
+    ImGui::MenuItem("ROMs", nullptr, &panelOpen("ROMs"));
+    if (ImGui::BeginMenu("Media")) {
+        if (ImGui::MenuItem("All media")) for (const char* w : MEDIA_WINDOWS) panelOpen(w) = true;
+        ImGui::Separator();
+        for (const char* w : MEDIA_WINDOWS) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+        ImGui::EndMenu();
+    }
     if (ImGui::BeginMenu("Settings")) {
         if (ImGui::MenuItem("All settings")) openAllSettings();
         ImGui::Separator();
@@ -928,22 +969,27 @@ void GuiShell::windowMachine() {
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderFloat("##speed", &pct, 25.0f, 400.0f, "speed %.0f%%", ImGuiSliderFlags_Logarithmic)) host.speed = pct / 100.0f;
         }
-        if (ImGui::CollapsingHeader("ROMs")) sectionRoms(false);
     }
     ImGui::End();
+    if (panelOpen("ROMs")) {
+        if (ImGui::Begin("ROMs", &panelOpen("ROMs"))) {
+            WrapText wrapText;                 // text wraps at the window's edge
+            sectionRoms(false);
+        }
+        ImGui::End();
+    }
 }
 
 void GuiShell::windowMedia() {
-    if (!panelOpen("Media")) return;
-    if (ImGui::Begin("Media", &panelOpen("Media"))) {
-        WrapText wrapText;                     // text wraps at the window's edge
-        // Every slot the same way: what is in it (wrapping), then its buttons (a row that
-        // wraps), Eject among them.
-        auto loaded = [](const std::string& name, const char* none) {
-            if (name.empty()) textWrappedDisabled("%s", none);
-            else { ImGui::PushTextWrapPos(0.0f); ImGui::TextUnformatted(name.c_str()); ImGui::PopTextWrapPos(); }
-        };
-        if (ImGui::CollapsingHeader("Disk", ImGuiTreeNodeFlags_DefaultOpen)) {
+    // Every slot the same way: what is in it (wrapping), then its buttons (a row that wraps),
+    // Eject among them.
+    auto loaded = [](const std::string& name, const char* none) {
+        if (name.empty()) textWrappedDisabled("%s", none);
+        else { ImGui::PushTextWrapPos(0.0f); ImGui::TextUnformatted(name.c_str()); ImGui::PopTextWrapPos(); }
+    };
+    if (panelOpen("Discs")) {
+        if (ImGui::Begin("Discs", &panelOpen("Discs"))) {
+            WrapText wrapText;                 // text wraps at the window's edge
             for (int d = 0; d < 2; d++) {
                 ImGui::PushID(d);
                 ImGui::AlignTextToFramePadding();
@@ -965,13 +1011,21 @@ void GuiShell::windowMedia() {
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("What a program writes to a disc goes back into its image file.\nOff: the changes stay in memory (save them from the DSK editor).");
             if (!host.diskWriteError.empty()) textWrappedDisabled("Not saved: %s", host.diskWriteError.c_str());
         }
-        if (ImGui::CollapsingHeader("Tape", ImGuiTreeNodeFlags_DefaultOpen)) {
+        ImGui::End();
+    }
+    if (panelOpen("Tape")) {
+        if (ImGui::Begin("Tape", &panelOpen("Tape"))) {
+            WrapText wrapText;
             loaded(host.tapeName, "(no tape)");
             if (ImGui::SmallButton("Insert tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
             tapeDeckControls(false);
             ImGui::PushID("tapeopts"); sectionTape(false); ImGui::PopID();
         }
-        if (ImGui::CollapsingHeader("Cartridge")) {
+        ImGui::End();
+    }
+    if (panelOpen("Cartridge")) {
+        if (ImGui::Begin("Cartridge", &panelOpen("Cartridge"))) {
+            WrapText wrapText;
             loaded(host.cartName, "(no cartridge)");
             FlowRow row;
             if (row.smallButton("Load .CPR..."))
@@ -982,7 +1036,11 @@ void GuiShell::windowMedia() {
                 ImGui::SetTooltip("Out of the slot: the machine boots without it (a Plus on its system cartridge)");
             ImGui::EndDisabled();
         }
-        if (ImGui::CollapsingHeader("Snapshot")) {
+        ImGui::End();
+    }
+    if (panelOpen("Snapshot")) {
+        if (ImGui::Begin("Snapshot", &panelOpen("Snapshot"))) {
+            WrapText wrapText;
             loaded(host.snapshotName, "(no snapshot loaded)");
             FlowRow row;
             if (row.smallButton("Load .SNA...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
@@ -997,8 +1055,8 @@ void GuiShell::windowMedia() {
             if (row.smallButton("Screenshot .bmp...")) saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
             ImGui::EndDisabled();
         }
+        ImGui::End();
     }
-    ImGui::End();
 }
 
 // The settings: one window per section (SETTINGS_WINDOWS), each dockable on its own.

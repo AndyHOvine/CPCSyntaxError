@@ -6,6 +6,7 @@
 #include <map>
 #include <ostream>
 #include <string>
+#include <cstdint>
 #include <vector>
 
 #include "imgui.h"
@@ -92,6 +93,19 @@ void textWrappedDisabled(const char* fmt, ...);
 // long one runs off a narrow window). A click on the label toggles it, as on ImGui's. A
 // "##" in the label starts the part that is only an ID, as in ImGui.
 bool checkboxWrapped(const char* label, bool* v);
+
+// THE PICTURE THROUGH A SLOT MASK, as a colour tube shows it (the CTM's 3701B22 is a
+// slot-mask tube): src (sw x sh, 0xAABBGGRR) drawn w x h. Each slot of the mask lets the three
+// beams onto three phosphor stripes side by side -- red, green, blue, each `stripe` pixels
+// wide, so a triad is 3 x stripe -- in slots 3 x stripe high, with a dark bridge of `stripe`
+// rows between slots; the slots of neighbouring triads are staggered by half that period.
+// From 3 pixels a stripe, a 1-pixel black matrix separates the stripes. A PHOSPHOR SLOT IS
+// LIT WHOLE: its one colour, at the average of the picture's colour over the slot (no slot is
+// ever half lit), driven harder by the light the mask stops (clipped at full). strength 0..1
+// mixes this with the picture as it is (0: the picture unchanged). turned: the pattern turned
+// 90 degrees (stripes across; x and y swapped).
+void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
+                    std::vector<uint32_t>& out);
 
 // Writes a file whole or not at all: to a temporary file beside it, then renamed over it,
 // so a failed write (a full disc) leaves the old file as it was instead of cut short.

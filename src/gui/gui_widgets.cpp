@@ -2,6 +2,7 @@
 #include "gui_widgets.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstdarg>
 #include <cstdio>
 #include <cstring>
@@ -160,6 +161,67 @@ void ledGrid(std::initializer_list<LedItem> items, float column) {
         led(it.on, it.label);
         col += 1;
     }
+}
+
+void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
+                    std::vector<uint32_t>& out) {
+    w = std::max(1, w); h = std::max(1, h);
+    stripe = std::clamp(stripe, 1, 8);
+    const double s = std::clamp((double)strength, 0.0, 1.0);
+    const int triad = 3 * stripe, slotH = 3 * stripe, period = slotH + stripe;
+    const int lit = stripe >= 3 ? stripe - 1 : stripe;             // the black matrix takes a column
+    // a colour's light comes from lit/triad of the width and slotH/period of the height: the
+    // beams give that back (a slot clips at full)
+    const double gain = (double)triad * period / ((double)lit * slotH);
+    // the picture as it is, at 1 - strength: the bridges, the matrix and the other colours
+    // (integer: k/256 on red and blue together, then green)
+    const uint32_t k = (uint32_t)std::lround((1.0 - s) * 256.0);
+    std::vector<int> sx((size_t)w);
+    for (int x = 0; x < w; x++) sx[(size_t)x] = std::min(sw - 1, (int)((long long)x * sw / w));
+    out.resize((size_t)w * (size_t)h);
+    for (int y = 0; y < h; y++) {
+        const uint32_t* row = src + (size_t)std::min(sh - 1, (int)((long long)y * sh / h)) * (size_t)sw;
+        uint32_t* o = out.data() + (size_t)y * (size_t)w;
+        for (int x = 0; x < w; x++) {
+            const uint32_t v = row[sx[(size_t)x]];
+            o[x] = (((v & 0xff00ffu) * k >> 8) & 0xff00ffu) | (((v & 0x00ff00u) * k >> 8) & 0x00ff00u) | 0xff000000u;
+        }
+    }
+    if (s <= 0.0) return;
+    // each pixel's offset in the source and in `out`, split into its across and along parts
+    // (the stripes run along; turned swaps the screen's axes)
+    const int across = turned ? h : w, along = turned ? w : h;
+    std::vector<size_t> srcA((size_t)across), srcL((size_t)along), outA((size_t)across), outL((size_t)along);
+    for (int a = 0; a < across; a++) {
+        srcA[(size_t)a] = turned ? (size_t)std::min(sh - 1, (int)((long long)a * sh / h)) * (size_t)sw : (size_t)sx[(size_t)a];
+        outA[(size_t)a] = turned ? (size_t)a * (size_t)w : (size_t)a;
+    }
+    for (int l = 0; l < along; l++) {
+        srcL[(size_t)l] = turned ? (size_t)sx[(size_t)l] : (size_t)std::min(sh - 1, (int)((long long)l * sh / h)) * (size_t)sw;
+        outL[(size_t)l] = turned ? (size_t)l : (size_t)l * (size_t)w;
+    }
+    for (int t = 0; t * triad < across; t++)
+        for (int c = 0; c < 3; c++) {
+            const int a0 = t * triad + c * stripe, a1 = std::min(a0 + lit, across);
+            if (a0 >= across) break;
+            const int shift = 8 * c, off = (t & 1) * (period / 2);
+            for (int l0 = -off; l0 < along; l0 += period) {
+                const int lo = std::max(0, l0), hi = std::min(along, l0 + slotH);
+                if (hi <= lo) continue;
+                // the slot: the average of its colour, then the whole slot at that light
+                uint32_t sum = 0;
+                for (int a = a0; a < a1; a++)
+                    for (int l = lo; l < hi; l++) sum += (src[srcA[(size_t)a] + srcL[(size_t)l]] >> shift) & 255;
+                const double light = std::min(255.0, (double)sum / ((double)(a1 - a0) * (hi - lo)) * gain) * s;
+                const uint32_t add = (uint32_t)(light + 0.5);
+                for (int a = a0; a < a1; a++)
+                    for (int l = lo; l < hi; l++) {
+                        uint32_t& o = out[outA[(size_t)a] + outL[(size_t)l]];
+                        const uint32_t now = std::min(255u, ((o >> shift) & 255) + add);
+                        o = (o & ~(255u << shift)) | (now << shift);
+                    }
+            }
+        }
 }
 
 bool checkboxWrapped(const char* label, bool* v) {

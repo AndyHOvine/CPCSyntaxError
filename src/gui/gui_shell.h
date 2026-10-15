@@ -74,6 +74,8 @@ public:
     // effect's bloom); ImDrawCallback_ResetRenderState puts the usual blending back. Null:
     // the bloom blends as other draws do.
     ImDrawCallback additiveBlend = nullptr;
+    // ...and one after which draws MULTIPLY what is under them (the CRT effect's slot mask).
+
     bool quitRequested = false;
     bool mouseCaptureRequested = false;        // a click on a picture asks main to grab the mouse
     bool screenHovered = false;               // the mouse is over the emulated picture (Symbiface mouse)
@@ -130,7 +132,7 @@ private:
     // right of the screen, the tools below it.
     void placeNewlyOpened(unsigned dockspaceId);
     std::vector<std::string> placedThisSession;
-    unsigned groupNode[2] = { 0, 0 };   // the dock node each group opened into
+    unsigned groupNode[4] = { 0, 0, 0, 0 };   // the dock node each group opened into
     void handleShortcuts();
 
     // menus
@@ -146,7 +148,9 @@ private:
     // settings windows (gui_shell.cpp)
     void windowScreen(const ShellFrameInfo& info);
     void windowMachine();
-    void windowMedia();
+    void windowMedia();                 // the media windows (MEDIA_WINDOWS), each dockable on its own
+    // What is in the machine: a window each, tabbed together by default where "Media" was.
+    static constexpr const char* MEDIA_WINDOWS[] = { "Discs", "Tape", "Cartridge", "Snapshot" };
     void windowSettings();
     void openAllSettings();
     // The settings sections' windows, in windowSettings()'s order.
@@ -182,6 +186,14 @@ private:
 
     // printer / GFX9000 textures
     unsigned printerTexture = 0, gfxTexture = 0;
+    unsigned maskTexture = 0;           // the picture through the slot mask (texture slot 4)
+    std::vector<uint32_t> maskPixels;
+    // made again only for a new emulated frame, a new size or a new setting
+    struct MaskKey {
+        uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false;
+        bool operator==(const MaskKey& o) const { return frame == o.frame && w == o.w && h == o.h && strength == o.strength && stripe == o.stripe && turned == o.turned; }
+    };
+    MaskKey maskKey;
     unsigned logoTexture = 0;        // the logo (tools/make_logo.py, style A), uploaded once
     void drawLogo();
     long long gfxTextureFields = -1;
