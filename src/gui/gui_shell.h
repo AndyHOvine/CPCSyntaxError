@@ -39,6 +39,7 @@ class AssemblerWindow;
 class BasicWindow;
 class DskEditorWindow;
 class CheatsWindow;
+class LogicAnalyserWindow;
 class DevServer;
 
 // What the main loop hands the shell each frame.
@@ -95,6 +96,7 @@ private:
     std::unique_ptr<BasicWindow> basicWindow;
     std::unique_ptr<DskEditorWindow> dskEditor;
     std::unique_ptr<CheatsWindow> cheats;
+    std::unique_ptr<LogicAnalyserWindow> logicAnalyser;
     std::unique_ptr<DevServer> dev;
     void sectionDevelopment(bool asMenu);   // Settings > External debugging (gui_panels.cpp)
     char devWatchPath[512] = {}, devWatchAddr[32] = {}, devWatchRun[32] = {}, devWatchCommand[128] = {};
@@ -190,9 +192,10 @@ private:
     std::vector<uint32_t> maskPixels;
     // made again only for a new emulated frame, a new size or a new setting
     struct MaskKey {
-        uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false; float blur = 0;
+        uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false; float blur = 0; bool soft = false;
         bool operator==(const MaskKey& o) const {
-            return frame == o.frame && w == o.w && h == o.h && strength == o.strength && stripe == o.stripe && turned == o.turned && blur == o.blur;
+            return frame == o.frame && w == o.w && h == o.h && strength == o.strength && stripe == o.stripe && turned == o.turned && blur == o.blur
+                && soft == o.soft;
         }
     };
     MaskKey maskKey;

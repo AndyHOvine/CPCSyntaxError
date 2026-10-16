@@ -30,6 +30,7 @@ void CpcDac::reset() {
 }
 void CpcDac::setMode(const std::string& mode_) {
     mode = mode_;
+    sounding = mode == "digiblaster" || mode == "amdrum";
     printerInitSeen = 0;
     printerStrobe = false;
     reset();
@@ -74,7 +75,8 @@ int CpcDac::readPort(int port) {
     return 0xff;
 }
 void CpcDac::advanceTStates(int tStates) {
-    if (!outputSampleRate || mode == "none" || mode == "printer" || mode == "matrix") return;
+    // (asked every microsecond: the mode's flag, not three string compares)
+    if (!outputSampleRate || !sounding) return;
     samplePhase += tStates * outputSampleRate / 4000000.0;
     while (samplePhase >= 1) {
         samplePhase -= 1;

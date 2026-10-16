@@ -196,6 +196,7 @@ void KeyboardMatrix::rebuildKeyboardState() {
     applyDirectBits();
 }
 void KeyboardMatrix::setMatrixDirect(int row, int bit, bool pressed) {
+    if (onInput) { InputEvent e; e.kind = InputEvent::MatrixDirect; e.a = row; e.b = bit; e.c = pressed ? 1 : 0; onInput(e); }
     int key = (row << 3) | bit;
     if (pressed) {
         directBits.insert(key);
@@ -212,6 +213,7 @@ void KeyboardMatrix::applyDirectBits() {
     }
 }
 bool KeyboardMatrix::setKey(const std::string& code, bool pressed, const std::string& characterIn, int location) {
+    if (onInput) { InputEvent e; e.kind = InputEvent::Key; e.code = code; e.a = pressed ? 1 : 0; e.text = characterIn; e.b = location; onInput(e); }
     std::string character = characterIn;
     std::string effectiveCode = code;
     bool numpadLocation = location == 3;
@@ -252,7 +254,11 @@ void KeyboardMatrix::setJoystick(int bit, bool pressed, const std::string& sourc
     bool gp = source == "gamepad";
     int& prop = player == 1 ? (gp ? gamepadJoystick1 : keyboardJoystick1)
                             : (gp ? gamepadJoystick : keyboardJoystick);
-    if (pressed) prop &= ~(1 << bit); else prop |= 1 << bit;
+    const int next = pressed ? prop & ~(1 << bit) : prop | 1 << bit;
+    if (onInput && next != prop) {
+        InputEvent e; e.kind = InputEvent::Joystick; e.a = bit; e.b = pressed ? 1 : 0; e.code = source; e.c = player; onInput(e);
+    }
+    prop = next;
 }
 void KeyboardMatrix::setLightgunEnabled(bool enabled) {
     lightgunEnabled = enabled;
@@ -268,6 +274,7 @@ void KeyboardMatrix::setLightgunType(const std::string& type) {
 }
 void KeyboardMatrix::setLightgunBeamHit(bool hit) { lightgunBeamHit = hit; }
 void KeyboardMatrix::setLightgunTrigger(bool pressed) {
+    if (onInput) { InputEvent e; e.kind = InputEvent::LightgunTrigger; e.a = pressed ? 1 : 0; onInput(e); }
     bool next = pressed;
     if (lightgunMode == "gunstick" && next && !lightgunTrigger) {
         gunstickTriggerPending = true;

@@ -61,6 +61,7 @@ GX4000::GX4000() {
     // CPC: the ASIC is that machine's GATE ARRAY, and its C-SYNC goes to a monitor too.
     gateArray->pixelSink = [](void* machine) { static_cast<GX4000*>(machine)->advanceClassicMonitorCharacter(); };
     gateArray->pixelSinkContext = this;
+    gateArray->pixelRunSink = [](void* machine, int n) { static_cast<GX4000*>(machine)->advanceClassicMonitorRun(n); };
     gateArray->onTraceRaise = [this](const char* why, bool raised, int r52) {
         std::fprintf(stderr, "f%-6d %-8s %-8s C0=%2d C4=%3d C9=%d  R52=%2d\n",
                      crtc ? crtc->frame : -1, raised ? "RAISE" : "(no int)", why,
@@ -166,6 +167,7 @@ GX4000::GX4000() {
         if (playcity->enabled) { playcity->advanceMicrosecond(); playcity->cursorPin(crtc->cursorOutput()); }
         speech->advanceMicrosecond();
         if (serial->enabled) serial->advanceMicrosecond();
+        if (analyser.enabled) recordAnalyser();
     };
     o.onVsyncStart = [this]() {
         gateArray->onVsyncStart(crtc->hsync,
@@ -196,8 +198,11 @@ GX4000::GX4000() {
     };
     o.onSelect = [this](int value) { if (plusHardware) asic->advanceUnlock(value); };
     o.onLightgunBeam = [this](int, int) {
-        std::string mode = keyboard ? keyboard->lightgunMode : "";
+        // asked first, and the mode read in place: a copy of the string each call was a
+        // string built and freed for every character
         if (!crtc->lightgunEnabled) return;
+        static const std::string none;
+        const std::string& mode = keyboard ? keyboard->lightgunMode : none;
         if (mode != "gunstick" && mode != "westphaser" && mode != "trojan") return;
         Beam beam = lightgunBeamCanvasPosition();
         double aimX = crtc->lightgunX, aimY = crtc->lightgunY;
@@ -366,6 +371,10 @@ void GX4000::updateGunstickSensor(Beam beam, double aimX, double aimY) {
 void GX4000::completeRasterFrame() {
     dbgFrameCount++;
     { int disp = 0; for (auto& l : rasterCapture) if (l && l->vDisplay) { for (uint8_t b : l->displayEnabled) if (b) { disp++; break; } } if (disp == 0) dbgBlankFrames++; }
+    // The frame before last is let go here: its records that nothing else holds are kept
+    // for captureRasterState to fill again, with their buffers (a line is a dozen of them).
+    for (auto& l : previousRasterFrame)
+        if (l && l.use_count() == 1 && rasterPool.size() < 1024) rasterPool.push_back(std::move(l));
     previousRasterFrame = rasterFrame;
     rasterFrame = rasterCapture; rasterCapture.clear();
     videoFrameRegisters = videoCaptureRegisters;
@@ -471,6 +480,58 @@ static void relockRefile(RasterLine& prev, RasterLine& cur, int chars) {
     if (!cur.horizontalCounters.empty()) cur.horizontalCounterAtMonitorLine = cur.horizontalCounters[0];
 }
 
+// n Pixel-M2 of a C-SYNC that the GATE ARRAY keeps as it is: one step when the monitor only
+// counts in them (CtmMonitor::quietRun; then nothing below has anything to do either: no
+// decision, no re-lock, no line end), else one pixel at a time.
+// The raster timing overlay: the write, on the record of the line the monitor is sweeping,
+// at the character it is on. Read only (a line not yet begun has no record: not noted).
+void GX4000::noteIo(int port, int value, int kind) {
+    const int at = crtc->scanlineInFrame;
+    if (at < 0 || at >= (int)rasterCapture.size() || !rasterCapture[(size_t)at]) return;
+    RasterLine::IoMark m;
+    m.slot = (uint8_t)((classicMonitorCharacter + lineSlotShift) & 0xff);
+    m.value = (uint8_t)value;
+    m.port = (uint16_t)port;
+    if (kind >= 0) m.kind = (uint8_t)kind;
+    else if ((port & 0x4000) == 0) m.kind = (port & 0x0100) ? RasterLine::IO_CRTC_DATA : RasterLine::IO_CRTC_SELECT;   // &BCxx / &BDxx
+    else if ((port & 0xc000) == 0x4000) {                                                                                  // &7Fxx
+        const int fn = (value >> 6) & 3;
+        m.kind = fn == 0 ? RasterLine::IO_GA_PEN : fn == 1 ? RasterLine::IO_GA_INK : fn == 2 ? RasterLine::IO_GA_MODE : RasterLine::IO_GA_RAM;
+    } else if ((port & 0x0800) == 0) m.kind = RasterLine::IO_PPI;                                                          // &F4xx-&F7xx
+    else m.kind = RasterLine::IO_OTHER;
+    rasterCapture[(size_t)at]->ioMarks.push_back(m);
+}
+
+// The logic analyser's sample for this character: read only, so the machine runs the same
+// with it as without it.
+void GX4000::recordAnalyser() {
+    LaSample s;
+    s.flags = (uint16_t)((crtc->hsync ? LaSample::HSYNC : 0) | (crtc->vsyncPinActive() ? LaSample::VSYNC : 0)
+        | (gateArray->csyncActive() ? LaSample::CSYNC : 0) | (crtc->displayOutputBytes() ? LaSample::DISPEN : 0)
+        | (cpu->pendingInterrupt != -1 ? LaSample::INT : 0) | (cpu->halted ? LaSample::HALT : 0)
+        | (tape->motorOn ? LaSample::MOTOR : 0) | (tape->getPortBBit() ? LaSample::TAPE : 0)
+        | (fdc->interruptPending() ? LaSample::FDCINT : 0));
+    s.pc = (uint16_t)(cpu->instructionStartPc & 0xffff);
+    s.ma = (uint16_t)(crtc->maRow & 0x3fff);
+    s.c0 = (uint8_t)crtc->horizontal; s.c4 = (uint8_t)crtc->vertical; s.c9 = (uint8_t)crtc->raster;
+    s.r52 = (uint8_t)gateArray->interruptCounter;
+    s.mode = (uint8_t)(gateArray->mode & 3);
+    // each channel as AY38912::level mixes it, as a 0..15 level
+    for (int c = 0; c < 3; c++) {
+        const int mixer = ay->registers[7];
+        const bool tone = (mixer & (1 << c)) || ay->toneState[(size_t)c];
+        const bool noise = (mixer & (8 << c)) || ay->noiseState;
+        const int volume = ay->registers[(size_t)(8 + c)];
+        s.ay[c] = (uint8_t)(tone && noise ? (volume & 0x10 ? ay->envelopeVolume : volume & 0x0f) : 0);
+    }
+    if (analyser.push(s)) debuggerPaused = true;    // the trigger: stopped, as at a breakpoint
+}
+
+void GX4000::advanceClassicMonitorRun(int n) {
+    if (monitorRenderer->quietRun(gateArray->csyncActive(), n)) return;
+    for (int i = 0; i < n; i++) advanceClassicMonitorCharacter();
+}
+
 void GX4000::advanceClassicMonitorCharacter() {
     // The monitor's one input: the GATE ARRAY's composite C-SYNC on pin 4 of the DIN6.
     // It used to be handed R0, R3, R4 and R12 instead, none of which a CRT can see.
@@ -510,7 +571,8 @@ void GX4000::advanceClassicMonitorCharacter() {
             rasterCapture[at]->monitorLineOffset += delta - chars * 16;
             lineSlotShift += chars;
         } else if (have) rasterCapture[at]->monitorLineOffset += delta;
-        if (std::getenv("CPCSE_TRACE_SNAP"))
+        static const bool traceSnap = std::getenv("CPCSE_TRACE_SNAP") != nullptr;
+        if (traceSnap)
             std::fprintf(stderr, "SNAP line %d delta %+d (record %s, capture size %zu, C0 %d)\n",
                          at, delta, have ? "amended" : "NOT YET CREATED",
                          rasterCapture.size(), crtc->horizontal);
@@ -686,9 +748,27 @@ void GX4000::captureRasterState() {
     const Bytes& spritePatterns = snapshotSpritePatterns();
     bool existing = displayLine >= 0 && displayLine < (int)rasterCapture.size() && rasterCapture[displayLine];
     if (displayLine >= 0 && displayLine < 512 && !existing) {
-        auto line = std::make_shared<RasterLine>();
+        std::shared_ptr<RasterLine> line;
+        if (rasterPool.empty()) line = std::make_shared<RasterLine>();
+        else {
+            // a record of an old frame, made a new one: every field as a new RasterLine has
+            // it (anything not named here simply comes from `fresh`), only the buffers kept
+            line = std::move(rasterPool.back());
+            rasterPool.pop_back();
+            RasterLine& l = *line;
+            RasterLine fresh;
+            auto keep = [](auto& to, auto& from) { to.swap(from); to.clear(); };
+            keep(fresh.gaPalette, l.gaPalette); keep(fresh.palette, l.palette);
+            keep(fresh.spriteAttributes, l.spriteAttributes); keep(fresh.spriteMagnification, l.spriteMagnification);
+            keep(fresh.spritePatterns, l.spritePatterns); keep(fresh.videoBytes, l.videoBytes);
+            keep(fresh.displayEnabled, l.displayEnabled); keep(fresh.horizontalCounters, l.horizontalCounters);
+            keep(fresh.hsyncBlackFrom, l.hsyncBlackFrom); keep(fresh.hsyncBlackTo, l.hsyncBlackTo);
+            keep(fresh.videoLookbehind, l.videoLookbehind); keep(fresh.segments, l.segments); keep(fresh.ioMarks, l.ioMarks);
+            l = std::move(fresh);
+        }
         line->mode = gateArray->mode; line->locked = asic->locked;
-        line->gaPalette = arrToVec(gateArray->gaPalette); line->palette = arrToVec16(asic->palette);
+        line->gaPalette.assign(gateArray->gaPalette.begin(), gateArray->gaPalette.end());
+        line->palette.assign(asic->palette.begin(), asic->palette.end());
         line->screenAddress = crtc->screenAddress();
         line->lineAddress = crtc->rowAddress; line->videoRaster = crtc->vlc;
         line->verticalCounter = crtc->vertical; line->rasterCounter = crtc->raster; line->verticalAdjust = crtc->verticalAdjust;
@@ -707,13 +787,13 @@ void GX4000::captureRasterState() {
         line->displayStartCharacter = 0;   // DISPTMG skew now shows as DISPEN border gaps, not a data offset
         line->rasterHeight = rasterHeight; line->horizontalScroll = asic->horizontalScroll; line->verticalScroll = asic->verticalScroll; line->extendBorder = asic->softScrollControl;
         line->splitLine = asic->rasterSplitLine; line->splitAddress = asic->splitAddress;
-        line->spriteAttributes = sliceAsicRam(memory->asicRam, 0x2000, 0x2080);
-        line->spriteMagnification = arrToVec(asic->spriteMagnification);
-        line->spritePatterns = spritePatterns;
-        line->videoBytes = Bytes(0x200, 0); line->displayEnabled = Bytes(0x100, 0);
-        line->horizontalCounters = Bytes(0x100, 0);
-        line->hsyncBlackFrom = Bytes(0x100, 16); line->hsyncBlackTo = Bytes(0x100, 16);
-        line->videoLookbehind = Bytes{ (uint8_t)memory->readVideo(previous2), (uint8_t)memory->readVideo(previous1) };
+        line->spriteAttributes.assign(memory->asicRam.begin() + 0x2000, memory->asicRam.begin() + 0x2080);
+        line->spriteMagnification.assign(asic->spriteMagnification.begin(), asic->spriteMagnification.end());
+        line->spritePatterns.assign(spritePatterns.begin(), spritePatterns.end());
+        line->videoBytes.assign(0x200, 0); line->displayEnabled.assign(0x100, 0);
+        line->horizontalCounters.assign(0x100, 0);
+        line->hsyncBlackFrom.assign(0x100, 16); line->hsyncBlackTo.assign(0x100, 16);
+        line->videoLookbehind.assign({ (uint8_t)memory->readVideo(previous2), (uint8_t)memory->readVideo(previous1) });
         line->videoRevision = asic->videoRevision; line->spriteRevision = asic->spriteRevision;
         line->spriteDataRevision = asic->spriteDataRevision;
         if (displayLine >= (int)rasterCapture.size()) rasterCapture.resize(displayLine + 1);
@@ -727,8 +807,10 @@ void GX4000::captureRasterCharacter() {
     int rasterHeight = crtc->rasterHeight(); (void)rasterHeight;
     int displayLine = crtc->scanlineInFrame;
     if (displayLine < 0 || displayLine >= 512) return;
-    std::shared_ptr<RasterLine> line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine] : nullptr;
-    if (!line) { captureRasterState(); line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine] : nullptr; }
+    // a plain pointer: rasterCapture holds the record, and a shared_ptr copy here cost two
+    // atomic counts a character
+    RasterLine* line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine].get() : nullptr;
+    if (!line) { captureRasterState(); line = displayLine < (int)rasterCapture.size() ? rasterCapture[displayLine].get() : nullptr; }
     if (!line) return;
     int character = classicMonitorCharacter & 0xff;
     // ...moved along by any re-lock taken earlier in this sweep line (relockRefile).
@@ -847,6 +929,7 @@ static long long traceIoFrom() {
 }
 
 void GX4000::writePort(int port, int value) {
+    if (ioOverlay) noteIo(port, value);
     if (machineCycles >= traceIoFrom() && traceIoPort(port))
         std::fprintf(stderr, "IO OUT %04x <- %02x @%lld pc %04x\n", port & 0xffff, value & 0xff, machineCycles + hardwareCyclesAdvanced, cpu->instructionStartPc & 0xffff);
     int high = (unsigned)port >> 8 & 0xff;
@@ -1088,6 +1171,9 @@ bool GX4000::motorStartWaitTrap() {
 }
 
 int GX4000::stepInstruction() {
+    // the timeline: inputs logged for this point of a replay, then the count
+    if (instructions >= inputDueAt && onInputDue) onInputDue();
+    instructions += 1;
     // instant tape loading: the firmware's CAS READ done at once, then on at its caller
     if (tape->instantLoad) {
         if (cpu->pc == 0x2836 || cpu->pc == 0x29a6) casReadTrap();
@@ -1263,6 +1349,8 @@ int GX4000::stepInstruction() {
     return cycles;
 }
 bool GX4000::debuggerBreakpointHit() {
+    // asked before every instruction: nothing to look up when there is nothing to stop at
+    if (stepTarget < 0 && breakpointSkipOnce < 0 && (!breakpoints || breakpoints->empty())) return false;
     int pc = cpu->pc & 0xffff;
     bool stepTargetHit = stepTarget == pc;
     bool hasBreakpoint = breakpoints && breakpoints->count(pc);

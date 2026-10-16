@@ -46,6 +46,40 @@ void GuiShell::debugToolbar() {
     if (after().button("Into (F7)")) debugger.stepInto();
     if (after().button("Over (F8)")) debugger.stepOver();
     if (after().button("Out (Sh+F8)")) debugger.stepOut();
+    // back in time (the timeline): paused first, the message in place of the reason
+    auto back = [&](const std::function<bool()>& go) {
+        if (!host.paused) debugger.pause();
+        go();
+        host.breakReason = host.timelineMessage;
+    };
+    ImGui::BeginDisabled(!host.timelineEnabled);
+    if (ImGui::Button("Back (Sh+F7)")) back([&] { return host.timelineStepBack(); });
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("One instruction back");
+    if (after().button("Frame back")) back([&] { return host.timelineFrameBack(); });
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("To the start of the frame before");
+    if (after().button("Run back (Sh+F5)")) back([&] { return host.timelineRunBack(); });
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Back to the last time a breakpoint was hit");
+    {
+        FlowRow w = after();
+        w.textDisabled("Last write to");
+        w.field(56.0f, "##lastwrite");
+        static char lastWriteText[8] = "C000";
+        ImGui::InputText("##lastwrite", lastWriteText, sizeof lastWriteText, ImGuiInputTextFlags_CharsHexadecimal);
+        if (w.button("Go##lastwrite")) {
+            const int a = debugger.parseAddress(lastWriteText);
+            if (a >= 0) back([&] { return host.timelineLastWrite(a, a); });
+        }
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("Back to the instruction that last wrote this address");
+    }
+    ImGui::EndDisabled();
+    {
+        const EmuHost::TimelineInfo t = host.timelineInfo();
+        char rec[96];
+        if (!host.timelineEnabled) std::snprintf(rec, sizeof rec, "Timeline off (Machine window)");
+        else std::snprintf(rec, sizeof rec, "Recorded: %zu s, %zu inputs%s", t.snapshots * (size_t)host.timelineInterval / 50, t.inputs,
+                           t.now < t.liveEnd ? ", replaying" : "");
+        after().textDisabled(rec);
+    }
     FlowRow state = after();
     state.spacing = 18.0f;
     if (host.paused) state.textColored(kAccent, host.breakReason.empty() ? "Paused" : host.breakReason.c_str());
@@ -70,6 +104,7 @@ void GuiShell::cpuContent() {
                 ImGui::PushID(name);
                 if (ImGui::InputScalar("##v", ImGuiDataType_S32, &v, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal)) {
                     hi = (v >> 8) & 0xff; lo = v & 0xff;
+                    host.timelineEdited();
                 }
                 ImGui::PopID();
             } else ImGui::Text("%04X", v);
@@ -81,7 +116,7 @@ void GuiShell::cpuContent() {
                 int v = r & 0xffff;
                 ImGui::SetNextItemWidth(52);
                 ImGui::PushID(name);
-                if (ImGui::InputScalar("##v", ImGuiDataType_S32, &v, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal)) r = v & 0xffff;
+                if (ImGui::InputScalar("##v", ImGuiDataType_S32, &v, nullptr, nullptr, "%04X", ImGuiInputTextFlags_CharsHexadecimal)) { r = v & 0xffff; host.timelineEdited(); }
                 ImGui::PopID();
             } else ImGui::Text("%04X", r & 0xffff);
         };
@@ -92,7 +127,7 @@ void GuiShell::cpuContent() {
                 int v = r & 0xff;
                 ImGui::SetNextItemWidth(52);
                 ImGui::PushID(name);
-                if (ImGui::InputScalar("##v", ImGuiDataType_S32, &v, nullptr, nullptr, "%02X", ImGuiInputTextFlags_CharsHexadecimal)) r = v & 0xff;
+                if (ImGui::InputScalar("##v", ImGuiDataType_S32, &v, nullptr, nullptr, "%02X", ImGuiInputTextFlags_CharsHexadecimal)) { r = v & 0xff; host.timelineEdited(); }
                 ImGui::PopID();
             } else ImGui::Text("%02X", r & 0xff);
         };
@@ -323,6 +358,7 @@ void GuiShell::memoryHexContent() {
         };
         auto writeAt = [&](int a, int v) {
             if (a < 0 || a >= size) return;
+            host.timelineEdited();
             if (memView == 0) m->write(a, v);
             else if (memView == 1) m->ram[(size_t)a] = (uint8_t)v;
             else m->asicRam[(size_t)a] = (uint8_t)v;

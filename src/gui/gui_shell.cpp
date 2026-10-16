@@ -14,6 +14,7 @@
 #include "gui_basic.h"
 #include "gui_dsk_editor.h"
 #include "gui_cheats.h"
+#include "gui_logic.h"
 #include "devserver.h"
 
 // DejaVu Sans Mono (Bitstream Vera licence: third_party/dejavu/LICENSE.txt)
@@ -51,6 +52,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Debugger", "win_debugger", false, false },
         { "Chips", "win_chips", false, false },
         { "Memory", "win_memory", false, false },
+        { "Logic analyser", "win_logic", false, false },
         { "GFX9000", "win_gfx9000", false, false },
         { "Assembler", "win_asm", false, false },
         { "BASIC", "win_basic", false, false },
@@ -71,6 +73,7 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
     basicWindow = std::make_unique<BasicWindow>(host, browser, saver);
     dskEditor = std::make_unique<DskEditorWindow>(host, browser, saver);
     cheats = std::make_unique<CheatsWindow>(host, browser, saver);
+    logicAnalyser = std::make_unique<LogicAnalyserWindow>(host, debugger);
     dev = std::make_unique<DevServer>(host, debugger);
     dev->onQuit = [this]() { quitRequested = true; };
 }
@@ -163,11 +166,25 @@ void GuiShell::handleShortcuts() {
     if (io.WantTextInput || !host.booted()) return;
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) host.reset();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false)) { if (host.paused) debugger.run(); else debugger.pause(); }
+    // Ctrl+Left: a second back (held: on going back); the machine runs on from there
+    if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true) && host.timelineEnabled) {
+        host.timelineRewind(1.0);
+        host.status = host.timelineMessage;
+    }
     // The debugger's keys belong to the debugger while one of its windows has the focus,
     // or while the machine is stopped; otherwise they are the CPC's function keys.
     if (!toolFocused && !host.paused) return;
-    if (ImGui::IsKeyPressed(ImGuiKey_F5, false)) { if (host.paused) debugger.run(); else debugger.pause(); }
-    if (ImGui::IsKeyPressed(ImGuiKey_F7)) debugger.stepInto();
+    if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && !io.KeyShift) { if (host.paused) debugger.run(); else debugger.pause(); }
+    if (ImGui::IsKeyPressed(ImGuiKey_F7) && io.KeyShift && host.timelineEnabled) {
+        if (!host.paused) debugger.pause();
+        host.timelineStepBack();
+        host.breakReason = host.timelineMessage;
+    } else if (ImGui::IsKeyPressed(ImGuiKey_F5, false) && io.KeyShift && host.timelineEnabled) {
+        if (!host.paused) debugger.pause();
+        host.timelineRunBack();
+        host.breakReason = host.timelineMessage;
+        return;
+    } else if (ImGui::IsKeyPressed(ImGuiKey_F7)) debugger.stepInto();
     if (ImGui::IsKeyPressed(ImGuiKey_F8)) { if (io.KeyShift) debugger.stepOut(); else debugger.stepOver(); }
 }
 
@@ -221,6 +238,12 @@ void GuiShell::draw(const ShellFrameInfo& info) {
         cheats->draw(&panelOpen("Cheats"));
         if (cheats->focused) toolFocusedNow = true;
     }
+    if (panelOpen("Logic analyser")) {
+        logicAnalyser->draw(&panelOpen("Logic analyser"));
+        if (logicAnalyser->focused) toolFocusedNow = true;
+    }
+    // the analyser samples only while its window is open
+    else if (host.emu && host.emu->analyser.enabled) host.emu->analyser.enabled = false;
     windowAbout();
     if (showImGuiDemo) ImGui::ShowDemoWindow(&showImGuiDemo);
 
@@ -254,7 +277,7 @@ void GuiShell::buildDefaultLayout(unsigned id) {
 void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
-        { { "Debugger", "Chips", "Memory", "GFX9000" }, ImGuiDir_Right, 0.42f },
+        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser" }, ImGuiDir_Right, 0.42f },
         { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
@@ -366,15 +389,17 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         // every 2 source rows) on a green or grey one, or as chosen -- and a faint bloom.
         // Cheap, and off unless turned on.
         if (host.crtEffect && !gfxOnMain) {
-            if (host.crtSlotMask() && host.crtMask > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
+            const bool softMask = host.crtPattern == "soft";
+            if ((host.crtSlotMask() || softMask) && host.crtMask > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
                 // the picture through the slot mask, each phosphor slot lit whole, at the
                 // picture's drawn size (to 2560 x 2048), over the plain picture
                 const int w = std::min(2560, (int)std::lround(drawW)), h = std::min(2048, (int)std::lround(drawH));
                 const bool soft = host.crtBlur > 0.001f && blurPixels.size() == host.video->pixels.size();
-                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, soft ? host.crtBlur : 0.0f };
+                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, soft ? host.crtBlur : 0.0f, softMask };
                 if (!maskTexture || !(key == maskKey)) {
-                    slotMaskRender(soft ? blurPixels.data() : host.video->pixels.data(), host.video->width, host.video->height, w, h, host.crtMask,
-                                   host.crtMaskSize, host.crtMaskTurned, maskPixels);
+                    // the phosphor slots (each lit whole, its own colour), or the soft mask over the whole picture
+                    (softMask ? softMaskRender : slotMaskRender)(soft ? blurPixels.data() : host.video->pixels.data(), host.video->width,
+                                                                 host.video->height, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, maskPixels);
                     maskTexture = uploadTexture(11, maskPixels.data(), w, h);
                     maskKey = key;
                 }
@@ -404,6 +429,25 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
             }
         }
         if (beside) drawGfxMonitor(dl, ox + drawW + gap, oy, gfxW, drawH);
+        // the raster timing overlay's legend, in the picture's top right corner
+        if (host.rasterOverlay && !gfxOnMain) {
+            static const struct { const char* name; ImU32 colour; } KEY[] = {
+                { "CRTC select", IM_COL32(255, 255, 0, 255) }, { "CRTC data", IM_COL32(255, 154, 0, 255) },
+                { "GA pen", IM_COL32(255, 255, 255, 255) }, { "GA ink", IM_COL32(255, 64, 255, 255) },
+                { "GA mode/ROM", IM_COL32(0, 224, 255, 255) }, { "GA RAM", IM_COL32(128, 128, 255, 255) },
+                { "PPI/AY", IM_COL32(64, 255, 64, 255) }, { "Plus palette", IM_COL32(255, 96, 128, 255) },
+            };
+            const float lh = ImGui::GetTextLineHeight();
+            float w = 0;
+            for (const auto& k : KEY) w = std::max(w, ImGui::CalcTextSize(k.name).x);
+            const ImVec2 at(ox + drawW - w - lh - 14, oy + 6);
+            dl->AddRectFilled(at, ImVec2(ox + drawW - 4, at.y + 8 * lh + 8), IM_COL32(0, 0, 0, 170));
+            for (int i = 0; i < 8; i++) {
+                const float y = at.y + 4 + i * lh;
+                dl->AddRectFilled(ImVec2(at.x + 4, y + 3), ImVec2(at.x + 4 + lh * 0.6f, y + lh - 3), KEY[i].colour);
+                dl->AddText(ImVec2(at.x + 8 + lh * 0.6f, y), ImGui::GetColorU32(ImGuiCol_Text), KEY[i].name);
+            }
+        }
         if (host.paused && host.booted()) {
             const char* label = host.breakReason.empty() ? "PAUSED" : host.breakReason.c_str();
             ImVec2 ts = ImGui::CalcTextSize(label);
@@ -433,8 +477,11 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
         ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : "RUNNING"));
         if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
         else if (host.symbifaceMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
+        if (host.movieRecording()) after().text("  REC MOVIE");
+        else if (host.moviePlaying()) after().text("  PLAY MOVIE");
         ImGui::PopStyleColor();
-        after().textDisabled("|"); after().text(host.status.c_str());
+        // while a movie runs, where it is (and whether in step) in place of the last message
+        after().textDisabled("|"); after().text(host.movieRecording() || host.moviePlaying() ? host.movieStatus.c_str() : host.status.c_str());
         char snd[32];
         if (!host.audioEnabled || !info.soundOpen) std::snprintf(snd, sizeof(snd), "SND off");
         else std::snprintf(snd, sizeof(snd), "SND %3.0f ms", info.soundQueuedMs);
@@ -750,6 +797,33 @@ void GuiShell::menuMachine() {
         }
         ImGui::EndMenu();
     }
+    ImGui::Separator();
+    // input movies: from power-on, every input; played back, the same run
+    if (ImGui::BeginMenu("Movie", host.booted())) {
+        if (!host.movieRecording() && !host.moviePlaying()) {
+            if (ImGui::MenuItem("Record from power-on")) { std::string why; if (!host.movieRecord(why)) host.status = why; }
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The machine is reset (the disc drives and the tape as at power-on),\n"
+                                  "then every key, joystick, mouse and tape button is recorded.\n"
+                                  "Played back with the same machine and media, it is the same run.");
+            if (ImGui::MenuItem("Play..."))
+                browser.open("Play a movie", host.romDir, { ".cpcmovie" }, [this](const std::string& p) {
+                    std::string why;
+                    if (!host.moviePlay(p, why)) host.status = why;
+                });
+        }
+        if (host.movieRecording()) {
+            if (ImGui::MenuItem("Stop and save..."))
+                saver.open("Save the movie", host.romDir, "movie.cpcmovie", [this](const std::string& p) {
+                    std::string why;
+                    if (!host.movieSave(p, why)) host.status = why;
+                });
+            if (ImGui::MenuItem("Stop (not saved)")) host.movieStop();
+        }
+        if (host.moviePlaying() && ImGui::MenuItem("Stop playing")) host.movieStop();
+        if (!host.movieStatus.empty()) { ImGui::Separator(); ImGui::TextDisabled("%s", host.movieStatus.c_str()); }
+        ImGui::EndMenu();
+    }
     ImGui::EndMenu();
 }
 
@@ -838,8 +912,16 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000", "Assembler", "BASIC" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "GFX9000", "Assembler", "BASIC" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    {
+        bool overlay = host.rasterOverlay;
+        if (ImGui::MenuItem("Raster timing overlay", nullptr, &overlay)) host.setRasterOverlay(overlay);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("A tick on the picture where each OUT was made, as the beam swept it:\n"
+                              "yellow CRTC register select, orange CRTC data, white GA pen, magenta GA ink,\n"
+                              "cyan GA mode / ROMs, blue GA RAM bank, green PPI / AY, pink Plus palette.");
+    }
     ImGui::Separator();
     if (ImGui::MenuItem("Assemble", "F9")) { panelOpen("Assembler") = true; assembler->assemble(false); }
     if (ImGui::MenuItem("Assemble and run", "Ctrl+F9")) { panelOpen("Assembler") = true; assembler->assemble(true); }
@@ -867,7 +949,7 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
@@ -980,6 +1062,22 @@ void GuiShell::windowMachine() {
             float pct = host.speed * 100.0f;
             ImGui::SetNextItemWidth(-1);
             if (ImGui::SliderFloat("##speed", &pct, 25.0f, 400.0f, "speed %.0f%%", ImGuiSliderFlags_Logarithmic)) host.speed = pct / 100.0f;
+            // the timeline: rewind (Ctrl+Left) and the debugger's way back
+            checkboxWrapped("Timeline: rewind (Ctrl+Left) and step back", &host.timelineEnabled);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("A snapshot of the machine every second and every input since, so it can go back:\n"
+                                  "Ctrl+Left a second back; in the debugger Back, Frame back, Run back, Last write.\n"
+                                  "A reset, a change of the machine or its media, or an edit in the debugger starts it again.\n"
+                                  "The M4, OPL4, IDE, serial and speech cards are not rewound, nor what is written to a disc.");
+            if (host.timelineEnabled) {
+                const EmuHost::TimelineInfo t = host.timelineInfo();
+                FlowRow row;
+                row.field(150.0f, "##tlbudget");
+                ImGui::SliderInt("##tlbudget", &host.timelineBudgetMB, 32, 1024, "up to %d MB", ImGuiSliderFlags_Logarithmic);
+                char rec[96];
+                std::snprintf(rec, sizeof rec, "%zu s held, %.0f MB", t.snapshots * (size_t)host.timelineInterval / 50, (double)t.bytes / (1024.0 * 1024.0));
+                row.textDisabled(rec);
+            }
         }
     }
     ImGui::End();

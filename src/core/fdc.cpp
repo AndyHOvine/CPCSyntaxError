@@ -5,6 +5,8 @@
 
 namespace cpcse {
 
+static bool traceFdc() { static const bool on = std::getenv("CPCSE_TRACE_FDC") != nullptr; return on; }
+
 enum { IDLE = 0, COMMAND = 1, READ = 2, WRITE = 3, RESULT = 4, WAITING = 5 };
 // The parameter bytes after each command byte (& 0x1f), as the data sheet's command table.
 static int paramCount(int opcode) {
@@ -90,11 +92,22 @@ void UPD765A::reset() {
     stepRateMs = 12; headLoadMs = 4; headUnloadMs = 32; headLoadedUntil = -1;
     seeks = {}; wasReady = { false, false };
 }
+// As at power-on, the same every time (an input movie starts here): reset, the heads on
+// track 0, the clock from 0 -- so the discs' turn, and every sector's time, is the same --
+// and each disc turning since long before.
+void UPD765A::powerOn() {
+    reset();
+    now = 0;
+    tracks = {};
+    insertedAt = { -(1LL << 40), -(1LL << 40) };
+    lastPoll = 0;
+    resultAt = -1;
+}
 void UPD765A::restoreSnapshotState(const SnapshotState& state) {
     auto savedOnDiskModified = onDiskModified;
     reset();
     onDiskModified = savedOnDiskModified;
-    for (int drive = 0; drive < 4; drive += 1) tracks[drive] = std::clamp(state.tracks[drive], 0, LAST_PHYSICAL_TRACK);
+    for (int drive = 0; drive < 4; drive += 1) tracks[drive] = std::clamp(state.tracks[drive], 0, lastTrack(drive));
     setMotor(state.motor ? 1 : 0);
     if (state.motor) { motorSince = now - 2 * REVOLUTION_US; insertedAt = { motorSince, motorSince }; }   // already turning
     wasReady = { ready(0), ready(1) };
@@ -125,18 +138,26 @@ void UPD765A::setMotor(int value) {
     motor = nextMotor;
 }
 // READY: a disc, turning, the index seen twice since the motor came on (MAME's floppy.cpp).
+int UPD765A::lastTrack(int drive) const {
+    const std::shared_ptr<Disk>& disk = drives[(size_t)(drive & 1)];
+    return disk && (int)disk->trackData.size() > LAST_PHYSICAL_TRACK + 1 ? LAST_80_TRACK : LAST_PHYSICAL_TRACK;
+}
 bool UPD765A::ready(int drive) const {
     const size_t d = (size_t)(drive & 1);
     return drives[d] && motorSince >= 0 && now - std::max(motorSince, insertedAt[d]) >= 2 * REVOLUTION_US;
 }
 
 void UPD765A::advanceCycles(int cycles) {
+    // idle, no seek running, the next READY poll not due: only the clock moves (asked every
+    // microsecond; the rest below would do nothing)
+    if (phase == IDLE && !seeks[0].busy && !seeks[1].busy && now + cycles - lastPoll < 2048) { now += cycles; return; }
     now += cycles;
     for (int d = 0; d < 2; d++) {
         Seek& s = seeks[(size_t)d];
         if (s.busy && now >= s.doneAt) {
             s.busy = false;
             tracks[(size_t)d] = s.target;
+            if (traceFdc()) std::fprintf(stderr, "FDC  %9lld seek drive %d done: on track %d\n", now, d, s.target);
             interrupts[(size_t)d] = s.st0 | (ready(d) ? 0 : ST0_AT | ST0_NR);
         }
     }
@@ -208,7 +229,6 @@ FdcDrive UPD765A::drive(int unit) {
     return { head, valid, track, disk0, trackNum, driveIndex };
 }
 // CPCSE_TRACE_FDC: every command and its result, with the time (us).
-static bool traceFdc() { static const bool on = std::getenv("CPCSE_TRACE_FDC") != nullptr; return on; }
 static void traceBytes(const char* what, long long t, int first, const std::vector<int>& bytes) {
     std::fprintf(stderr, "FDC %10lld %s %02X", t, what, first & 0xff);
     for (int b : bytes) std::fprintf(stderr, " %02X", b & 0xff);
@@ -439,13 +459,15 @@ void UPD765A::execute() {
         // the drive's stop (RECALIBRATE gives up after 77 steps).
         const int unit = paramOr(0, 0), driveIndex = unit & 1;
         const int from = tracks[(size_t)driveIndex];
-        int target = opcode == 0x07 ? 0 : std::clamp(paramOr(1, 0), 0, LAST_PHYSICAL_TRACK);
+        int target = opcode == 0x07 ? 0 : std::clamp(paramOr(1, 0), 0, lastTrack(driveIndex));
         int st0 = ST0_SE | (unit & 7);
         int steps = std::abs(target - from);
         if (opcode == 0x07 && steps > 77) { steps = 77; target = from - 77; st0 |= ST0_AT | 0x10; }   // EC
         Seek& s = seeks[(size_t)driveIndex];
         s.busy = true; s.target = target; s.st0 = st0;
         s.doneAt = now + (long long)steps * stepRateMs * 1000;
+        if (traceFdc()) std::fprintf(stderr, "FDC            seek drive %d from %d to %d: %d steps, done at %lld\n",
+                                     driveIndex, from, target, steps, s.doneAt);
         phase = IDLE;
         machineSounds.steps(steps);
         return;

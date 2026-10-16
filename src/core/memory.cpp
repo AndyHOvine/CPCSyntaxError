@@ -45,6 +45,8 @@ void GXMemory::reset(bool clearRam) {
 void GXMemory::loadCartridge(const std::vector<Bytes>& banks) {
     cartridge.assign(BANK_COUNT, Bytes{});
     for (int i = 0; i < BANK_COUNT; i++) if (i < (int)banks.size() && !banks[i].empty()) cartridge[i] = banks[i];
+    populatedBanks = 0;
+    for (const Bytes& b : cartridge) if (!b.empty()) populatedBanks++;
     remap();
 }
 void GXMemory::setLowerRom(const Bytes& bytes) { lowerRom = normalizeRom(bytes); remap(); }
@@ -141,11 +143,12 @@ void GXMemory::remapRam() {
 }
 
 int GXMemory::cartridgeByte(int page, int address) const {
+    // the page itself, the case of nearly every ROM read: no count of the banks needed
+    if (page >= 0 && page < (int)cartridge.size() && !cartridge[page].empty()) return cartridge[page][address & 0x3fff];
     // populated = this.cartridge.filter(Boolean)
-    int populatedCount = 0; for (auto& b : cartridge) if (!b.empty()) populatedCount++;
+    const int populatedCount = populatedBanks;
     const Bytes* bank = nullptr;
-    if (page >= 0 && page < (int)cartridge.size() && !cartridge[page].empty()) bank = &cartridge[page];
-    else if (populatedCount) {
+    if (populatedCount) {
         // populated[page % populated.length]
         int target = ((page % populatedCount) + populatedCount) % populatedCount;
         int seen = 0;

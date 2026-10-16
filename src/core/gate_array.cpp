@@ -238,7 +238,14 @@ void GateArray::onCharacter() {
     // longer than 6 is cut off here rather than at the CRTC's end.
     // One CRTC character is 16 of this chip's own clock ticks (§16.2.2). Everything
     // H06 times happens in there, at Pixel-M2 resolution.
-    for (int i = 0; i < PIXELS_PER_CHARACTER; i += 1) clockPixel();
+    if (pixelRunSink && !onPixel && quietCharacter()) {
+        // the 16 clockPixel() calls, when none of them would do more than count
+        h06Pixels += PIXELS_PER_CHARACTER;
+        if (hsyncPinFallIn > 0) hsyncPinFallIn -= PIXELS_PER_CHARACTER;
+        pixelRunSink(pixelSinkContext, PIXELS_PER_CHARACTER);
+    } else {
+        for (int i = 0; i < PIXELS_PER_CHARACTER; i += 1) clockPixel();
+    }
     if (modeLatchDelay <= 0) return;
     if (modeLatchJustArmed) { modeLatchJustArmed = false; return; }
     modeLatchDelay -= 1;

@@ -208,6 +208,7 @@ add_executable(cpcse
   src/gui/gui_memory_views.cpp
   src/gui/gui_dsk_editor.cpp
   src/gui/gui_cheats.cpp
+  src/gui/gui_logic.cpp
   src/gui/gui_assembler.cpp
   src/gui/gui_basic.cpp
   src/gui/asm_highlight.cpp

@@ -112,6 +112,11 @@ struct RasterLine {
     int spriteRevision = 0;
     int spriteDataRevision = 0;
     std::vector<RasterSegment> segments;
+    // THE RASTER TIMING OVERLAY (GX4000::ioOverlay): the OUTs made while this line was swept,
+    // each at the character the sweep was on -- where on the picture the write happened.
+    struct IoMark { uint8_t slot = 0; uint8_t kind = 0; uint8_t value = 0; uint16_t port = 0; };
+    enum : uint8_t { IO_CRTC_SELECT, IO_CRTC_DATA, IO_GA_PEN, IO_GA_INK, IO_GA_MODE, IO_GA_RAM, IO_PPI, IO_PLUS_PALETTE, IO_OTHER };
+    std::vector<IoMark> ioMarks;
 };
 
 } // namespace cpcse

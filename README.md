@@ -51,8 +51,9 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - **The CRT effect** (**Video → CRT effect**) shows the tube's own pattern: the slot mask of
   the colour sets (the CTM's tube is a slot-mask tube), with each red, green or blue phosphor
   slot lit as a whole, and scanlines on the green and grey sets. You can choose the pattern,
-  its strength and size, and turn the mask 90 degrees. A bloom adds a glow. A blur softens
-  the edges of the pixels, as the round spot of the beam does.
+  its strength and size, and turn the mask 90 degrees. The **soft slot mask** keeps each
+  pixel's colour whole under fine dark lines, as ACE-DL draws a CTM. A bloom adds a glow. A
+  blur softens the edges of the pixels, as the round spot of the beam does.
 - **The Z80** passes ZEXDOC, ZEXALL and all the tests of z80test 1.2a by Patrik Rak. This
   includes the undocumented flags, MEMPTR, SCF/CCF on a Zilog chip and interrupted block
   instructions.
@@ -175,6 +176,25 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   - **Memory**: a hex editor and a **memory map**. The map shows one pixel for each byte of a
     64K bank. The colour shows what the Z80 did there: opcode fetch, operand, read or write.
   - **GFX9000**: its picture, registers, palette, command engine and VRAM.
+  - **Logic analyser**: the machine's signals as traces, one sample a microsecond: HSYNC,
+    VSYNC, C-SYNC, DISPEN, INT, HALT, the cassette motor and input, the disc controller's
+    interrupt, the Gate Array mode, the CRTC counters C0, C4, C9, MA and R52, the Z80's PC and
+    the three AY channels. Zoom, two markers that measure time, and a trigger that stops the
+    CPC on a VSYNC, HSYNC or INT edge, a mode change, or a PC. It records only while open.
+  - **Raster timing overlay** (Debug menu): a tick on the picture where each OUT to the
+    CRTC, the Gate Array, the PPI or the Plus palette was made, as the beam swept it.
+  - **Back in time**: **Back** (Shift+F7) one instruction, **Frame back**, **Run back**
+    (Shift+F5) to the last breakpoint hit, and **Last write to** an address: the instruction
+    that last wrote it. Running on from there replays the inputs as they came.
+- **The timeline** (Machine window, on by default): a snapshot of the machine every second
+  and every input since. **Ctrl+Left** goes a second back (hold it to go on). The snapshots
+  are exact: from one, with the same inputs, the machine runs the same, instruction for
+  instruction. A reset, a change of the machine or its media, or an edit in the debugger
+  starts it again. The M4, OPL4, IDE, serial and speech cards are not rewound, nor what is
+  written to a disc.
+- **Input movies** (Machine → Movie): record from power-on, then every key, joystick, mouse
+  and tape button. Played back with the same machine and media, it is the same run; a check
+  every second shows that it stays in step, or where it went out of step.
 - **The DSK editor** (Tools, or Media → Drive → Edit):
   - Make new discs in all the CPC formats: DATA, SYSTEM, IBM, 42 or 80 tracks, ParaDOS,
     ROMDOS, Vortex, Dobbertin, or your own geometry.
@@ -277,6 +297,8 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | F10 | The STOP button of the Multiface II |
 | F5 | Run or pause (in a debugger window, or when paused) |
 | F7, F8, Shift+F8 | Step into, step over, step out |
+| Shift+F7, Shift+F5 | One instruction back, run back to the last breakpoint hit |
+| Ctrl+Left | A second back (the timeline) |
 | F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window) |
 | F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface) |
 
@@ -294,7 +316,7 @@ A headless screenshot mode is available for scripts:
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--savesna out.sna]
           [--crtc 0-4] [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
-          [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off]
+          [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off] [--raster-overlay]
           [--hhold -79..79] [--vhold -50..50]
           [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--ide <folder>] [--xrom <slot>=<rom file>]
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
@@ -309,6 +331,7 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   headless mode and on in the window.
 - `--record-tape` puts a blank tape in the deck and starts to record. At the end, the
   emulator saves the tape in that file.
+- `--raster-overlay` draws the raster timing overlay on the picture.
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait

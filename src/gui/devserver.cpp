@@ -561,6 +561,7 @@ struct DevServer::Impl {
             }
             GX4000* e = host.emu;
             for (size_t i = 0; i < length; i++) e->memory->write((int)((at + i) & 0xffff), data[from + i]);
+            host.timelineEdited();
             const int pc = r.run == LoadRequest::RUN_ENTRY ? (h.present && r.address < 0 ? h.entry : at) : r.run;
             char b[200];
             if (r.run == LoadRequest::NO_RUN)
@@ -873,6 +874,7 @@ struct DevServer::Impl {
             for (unsigned long k = 0; k < n * 2; k++) if (hexDigit(h[k]) < 0) { reply("E01"); return; }
             for (unsigned long k = 0; k < n; k++, h += 2)
                 e->memory->write((int)((a + k) & 0xffff), hexDigit(h[0]) << 4 | hexDigit(h[1]));
+            host.timelineEdited();
             reply("OK");
             return;
         }
@@ -1191,6 +1193,7 @@ struct DevServer::Impl {
                 for (size_t k = 0; k < h.size(); k += 2) bytes.push_back(hexDigit(h[k]) << 4 | hexDigit(h[k + 1]));
             }
             for (size_t k = 0; k < bytes.size(); k++) e->memory->write((int)((a + k) & 0xffff), bytes[k]);
+            host.timelineEdited();
             res.set("written", (int)bytes.size());
             return true;
         }

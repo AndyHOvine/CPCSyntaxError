@@ -25,6 +25,7 @@ public:
     Bytes ram;
     Bytes asicRam;
     std::vector<Bytes> cartridge;      // BANK_COUNT slots, empty == null
+    int populatedBanks = 0;            // how many of them are not empty: set where they are (the constructor, loadCartridge)
     Bytes lowerRom;                    // empty == null
     std::vector<Bytes> upperRoms;      // 256 slots
     Bytes snapshotLowerRom;

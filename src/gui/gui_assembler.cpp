@@ -282,6 +282,7 @@ void AssemblerWindow::assemble(bool thenRun) {
         char b[160];
         if (outLength > 0 && host.booted() && host.emu && host.emu->memory) {
             for (int i = 0; i < outLength; i++) host.emu->memory->write((lastStart + i) & 0xffff, out[i]);
+            host.timelineEdited();
             std::snprintf(b, sizeof(b), "Assembled %d bytes, loaded at &%04X-&%04X", outLength,
                           lastStart & 0xffff, (lastStart + outLength - 1) & 0xffff);
         } else if (outLength > 0) {

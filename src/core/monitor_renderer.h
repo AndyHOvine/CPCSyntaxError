@@ -374,6 +374,7 @@ public:
     // It used to be sampled once per CRTC character, which cannot see a C-SYNC edge
     // that falls part-way through one -- and §14.4 says every edge below R3l=6 does.
     bool clockPixel(bool csyncActive);
+    bool quietRun(bool csyncActive, int n);   // n x clockPixel when nothing but counting happens; else false
     bool consumeVerticalFrameEdge();
 
 private:

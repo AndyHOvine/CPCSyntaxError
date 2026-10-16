@@ -196,10 +196,10 @@ int CpcVideo::gaModeOffset(int mode) const {
 
 static PenState penFromLine(const RasterLine* s) {
     PenState p; if (!s) return p;
-    p.present = true; p.locked = s->locked; p.gaPalette = s->gaPalette; p.palette = s->palette; p.mode = s->mode; p.horizontalScroll = s->horizontalScroll; return p;
+    p.present = true; p.locked = s->locked; p.gaPalette = &s->gaPalette; p.palette = &s->palette; p.mode = s->mode; p.horizontalScroll = s->horizontalScroll; return p;
 }
 static PenState penFromSegment(const RasterSegment& s) {
-    PenState p; p.present = true; p.locked = s.locked; p.gaPalette = s.gaPalette; p.palette = s.palette; p.mode = s.mode; p.modeBefore = s.modeBefore; p.modeSwitchPixel = s.modeSwitchPixel; p.splitCharacter = s.character; p.horizontalScroll = s.horizontalScroll; return p;
+    PenState p; p.present = true; p.locked = s.locked; p.gaPalette = &s.gaPalette; p.palette = &s.palette; p.mode = s.mode; p.modeBefore = s.modeBefore; p.modeSwitchPixel = s.modeSwitchPixel; p.splitCharacter = s.character; p.horizontalScroll = s.horizontalScroll; return p;
 }
 
 CpcVideo::CpcVideo(int width, int height, GXMemory* memory, PlusAsic* asic, CRTC6845* crtc, GateArray* gateArray)
@@ -534,8 +534,8 @@ int CpcVideo::penColor(int pen) {
 }
 int CpcVideo::penColor(int pen, const PenState& state) {
     if (!state.present) return penColor(pen);
-    if (state.locked) return applyMonitor(GateArray::rgbForHardwareColour(state.gaPalette[pen]));
-    return applyMonitor(asic->colorValue(state.palette[pen & 0x1f]));
+    if (state.locked) return applyMonitor(GateArray::rgbForHardwareColour((*state.gaPalette)[pen]));
+    return applyMonitor(asic->colorValue((*state.palette)[pen & 0x1f]));
 }
 void CpcVideo::setPixel(int x, int y, int color, int w) {
     if (x < 0 || y < 0 || x >= width || y >= height) return;
@@ -930,6 +930,12 @@ void CpcVideo::render() {
             }
         }
         paintHsyncBlack(rowY, state, monitorRegisters);
+        // the raster timing overlay: a tick where each OUT of this line was made, in its colour
+        if (drawIoMarks && state && !state->ioMarks.empty()) {
+            static const int COLOURS[] = { 0xffff00, 0xff9a00, 0xffffff, 0xff40ff, 0x00e0ff, 0x8080ff, 0x40ff40, 0xff6080, 0xa0a0a0 };
+            for (const RasterLine::IoMark& m : state->ioMarks)
+                drawScaledPixel(m.slot * 16, y, COLOURS[std::min<int>(m.kind, 8)], 3, 0);
+        }
     }
     lineClipRight = std::nullopt; lineOrigin = std::nullopt; linePhysicalY = std::nullopt;
     lineHalfLine = 0;

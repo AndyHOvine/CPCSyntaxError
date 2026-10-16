@@ -2,6 +2,7 @@
 // Maps host keys, joystick and lightgun signals to CPC matrix lines.
 #pragma once
 #include "common.h"
+#include "input_event.h"
 
 namespace cpcse {
 
@@ -54,6 +55,9 @@ public:
     // use. The SHAKER runner hangs a key trace off it (SHAKER_KEY_TRACE) to tell a
     // program that raced past a held key from one whose key was never pressed.
     std::function<void(int row, int value)> onRowRead;
+    // The timeline's log (input_event.h): each input as it comes, before it takes effect.
+    // A joystick call that changes nothing is not passed on (the gamepad repeats them).
+    std::function<void(const InputEvent&)> onInput;
 };
 
 } // namespace cpcse

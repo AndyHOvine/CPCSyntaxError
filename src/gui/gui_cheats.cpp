@@ -291,6 +291,7 @@ void CheatsWindow::tabWizard() {
             else if (found.empty()) message = "There is no POKE in that.";
             else {
                 for (Cheat& c : found) { c.enabled = true; if (!c.freeze) if (Bytes* r = host.ram()) CheatList::poke(*r, c); host.cheatList.cheats.push_back(c); }
+                host.timelineEdited();
                 if (!host.cheatsPath.empty()) host.saveCheats();
                 pokeText[0] = 0;
                 step = DONE;

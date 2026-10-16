@@ -232,7 +232,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -245,6 +245,7 @@ int main(int argc, char** argv) {
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
+            else if (a == "--raster-overlay") rasterOverlayOn = true;   // the raster timing overlay drawn on the picture
             else if (a == "--type" && i + 1 < argc) typeStr = argv[++i];   // typed after boot (\\n = Enter)
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
             else if (a == "--f1at" && i + 1 < argc) f1at = std::atoi(argv[++i]);
@@ -320,6 +321,7 @@ int main(int argc, char** argv) {
             if (!snaPath.empty()) host.loadSnapshot(snaPath);
             if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc);
             host.setBeamRenderer(beam);
+            if (rasterOverlayOn) host.setRasterOverlay(true);
             if (gfx9000) host.setV9990(true);
             if (opl4) host.setOpl4(true);
             if (playcity) host.setPlayCity(true);
@@ -709,7 +711,7 @@ int main(int argc, char** argv) {
     host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
     host.crtBlur        = level("crtblur", 0.0, 0.0, 1.0);
     host.crtPattern     = gets("crtpattern", "auto");
-    if (host.crtPattern != "slot" && host.crtPattern != "scanlines" && host.crtPattern != "none") host.crtPattern = "auto";
+    if (host.crtPattern != "slot" && host.crtPattern != "soft" && host.crtPattern != "scanlines" && host.crtPattern != "none") host.crtPattern = "auto";
     host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
     host.crtMaskSize    = std::clamp(geti("crtmasksize", 1), 1, 4);
     host.crtMaskTurned  = geti("crtmaskturned", 0) != 0;
@@ -738,6 +740,8 @@ int main(int argc, char** argv) {
     host.diskWriteBack  = geti("diskwriteback", 1) != 0;   // a program's disc writes saved into its .dsk
     host.tapeRelayDelay = geti("taperelay", 1) != 0;
     host.tapeFastLoad   = geti("tapefastload", 1) != 0;
+    host.timelineEnabled = geti("timeline", 1) != 0;
+    host.timelineBudgetMB = std::clamp(geti("timelinemb", 256), 32, 1024);
     host.tapeInstantLoad = geti("tapeinstant", 0) != 0;
     host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
     host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
@@ -841,7 +845,7 @@ int main(int argc, char** argv) {
     };
     openPads();
     auto pollPads = [&]() {
-        if (!host.emu || !host.emu->gamepad) return;
+        if (!host.emu || !host.emu->gamepad || host.liveInputBlocked()) return;   // a movie plays its own
         std::vector<Gamepad> gs;
         for (auto* c : pads) {
             if (!c) continue;
@@ -918,7 +922,20 @@ int main(int argc, char** argv) {
                 SDL_GetQueuedAudioSize(audioDev) < (Uint32)(host.sampleRate * 2 * sizeof(int16_t) / 5))
                 SDL_QueueAudio(audioDev, host.audioOut.data(), (Uint32)(host.audioOut.size() * sizeof(int16_t)));
         };
-        if (unlimited) { for (int i = 0; i < 8; i++) { host.runFrame(); feedAudio(); } ran = true; framesThisIter = 8; accumulator = 0.0; }
+        // Unlimited: frames for about 30 ms of this computer's time, then one picture, and the
+        // swap does not wait for the display's refresh (a fixed 8 frames then a wait for the
+        // next refresh left the machine idle for part of every refresh).
+        static bool swapWaits = true;
+        if (swapWaits == unlimited) { swapWaits = !unlimited; SDL_GL_SetSwapInterval(swapWaits ? 1 : 0); }
+        // (plus what the last picture cost, so the CPC has at least half the time when the
+        // picture is dear: the CRT effect's blur and slot mask are milliseconds each)
+        static uint64_t uiCost = 0;
+        if (unlimited) {
+            const uint64_t budget = perfFreq * 30 / 1000 + std::min<uint64_t>(uiCost, perfFreq / 20);
+            do { host.runFrame(); feedAudio(); framesThisIter++; }
+            while (SDL_GetPerformanceCounter() - now < budget && framesThisIter < 200 && !host.paused);
+            ran = true; accumulator = 0.0;
+        }
         else {
             double period = FRAME_SECONDS / std::max(0.1f, speed);
             int steps = 0;
@@ -930,8 +947,11 @@ int main(int argc, char** argv) {
         emuFrameCount += framesThisIter;
         spdTimer += dt;
         if (spdTimer >= 0.5) { emuSpeedPct = (float)(emuFrameCount / (50.08 * spdTimer) * 100.0); emuFrameCount = 0; spdTimer = 0.0; }
-        if (ran) {
-            host.render();
+        const uint64_t uiStart = SDL_GetPerformanceCounter();
+        if (ran) host.render();
+        // a new picture: from the frames just run, a debugger step, or the timeline going back
+        if (host.pictureChanged) {
+            host.pictureChanged = false;
             glBindTexture(GL_TEXTURE_2D, screenTex);
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, GL_RGBA, GL_UNSIGNED_BYTE, host.video->pixels.data());
         }
@@ -972,6 +992,7 @@ int main(int argc, char** argv) {
             SDL_GL_MakeCurrent(backupWindow, backupContext);
         }
         SDL_GL_SwapWindow(window);
+        uiCost = SDL_GetPerformanceCounter() - uiStart;
     }
 
     // Persist settings.
@@ -1044,6 +1065,8 @@ int main(int argc, char** argv) {
             f << "diskwriteback=" << (host.diskWriteBack ? 1 : 0) << "\n";
             f << "taperelay=" << (host.tapeRelayDelay ? 1 : 0) << "\n";
             f << "tapefastload=" << (host.tapeFastLoad ? 1 : 0) << "\n";
+            f << "timeline=" << (host.timelineEnabled ? 1 : 0) << "\n";
+            f << "timelinemb=" << host.timelineBudgetMB << "\n";
             f << "tapeinstant=" << (host.tapeInstantLoad ? 1 : 0) << "\n";
             f << "tapefastbaud=" << host.tapeFastBaud << "\n";
             f << "tapeturbo=" << host.tapeTurbo << "\n";

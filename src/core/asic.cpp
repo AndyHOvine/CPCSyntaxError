@@ -102,6 +102,7 @@ void PlusAsic::setPlusPalette(int index, int value) {
 void PlusAsic::writeAsicRam(int address, int value) { writeAsicRam(address, value, memory->asicRam[address]); }
 void PlusAsic::writeAsicRam(int address, int value, int previous) {
     value &= 0xff;
+    if (onPaletteWrite && address >= 0x2400 && address < 0x2440) onPaletteWrite(onPaletteWriteContext, address, value);
     if (address < 0x1000) {
         value &= 0x0f;
         if ((previous & 0x0f) != value) { spriteDataRevision += 1; spriteRevision += 1; }

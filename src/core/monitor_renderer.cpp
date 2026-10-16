@@ -315,6 +315,41 @@ void CtmMonitor::vSync() {
     holdOutOfRange = hHold != 0 && hsyncLimit != measuredPeriod;
 }
 
+// n Pixel-M2 of an unchanging C-SYNC in one step, ONLY when clockPixel would do nothing in
+// them but count: no edge on the pin (so no tip starts), no tip ending, no separator trigger
+// or release, no deferred decision, no flyback. Then n calls of clockPixel leave exactly the
+// state set here. Anything else returns false with nothing changed, and the caller clocks
+// the pixels one at a time. (The 16 million pixels a second are the core's largest cost.)
+bool CtmMonitor::quietRun(bool csyncActive, int n) {
+    if (csyncActive != csyncLast) return false;                 // an edge: a tip starts or ends
+    const bool inTip = csyncActive != vsyncSeparated;
+    if (!inTip && pulseWidth != 0) return false;                // a tip ends on the first pixel
+    if (pendActive && pendSince + n >= MONITOR_PHASE_WINDOW) return false;
+    if (hsyncCount + n >= MONITOR_HSYNC_MAX) return false;
+    const int trigger = vsepTrigger();
+    int s;
+    if (csyncActive) {
+        // charging: it only rises, so it triggers in the run if it ends at the trigger
+        s = std::min(MONITOR_VSEP_MAX, separator + MONITOR_VSEP_CHARGE * n);
+        if (!vsyncSeparated && s >= trigger) return false;
+    } else {
+        // draining: highest on the first pixel; a release when it reaches 0
+        if (!vsyncSeparated && separator - MONITOR_VSEP_DRAIN >= trigger) return false;
+        s = std::max(0, separator - MONITOR_VSEP_DRAIN * n);
+        if (vsyncSeparated && s == 0) return false;
+    }
+    separator = s;
+    if (pendActive) pendSince += n;
+    if (inTip) pulseWidth += n;
+    else tipRetriggered = false;                                // what each such pixel sets
+    pixelClock += n;
+    sinceLastSync = lastLineSyncAt >= 0 ? (int)std::min<long long>(pixelClock - lastLineSyncAt, 1 << 30) : 0;
+    pixel += n;
+    character = pixel >> 4;
+    hsyncCount += n;
+    return true;
+}
+
 bool CtmMonitor::clockPixel(bool csyncActive) {
     // ---- sync separator ---------------------------------------------------------
     // The vertical half first: an integrator, not an edge detector.
@@ -451,7 +486,9 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
     // which SHAKER screen is being captured -- the env var alone fires from boot and the
     // budget is spent long before a screen 500 seconds into module B. The runner arms it
     // on SHAKER_DUMP_CODE, exactly as it arms the CRTC's own per-line trace.
-    if (traceLineOffsetBudget != 0 || std::getenv("CPCSE_TRACE_LINEOFF")) {
+    // (read once: the C runtime's getenv walks the whole environment, and this is once a line)
+    static const bool traceLineOffset = std::getenv("CPCSE_TRACE_LINEOFF") != nullptr;
+    if (traceLineOffsetBudget != 0 || traceLineOffset) {
         static long budget = -1;
         if (budget == -1) {
             const char* cap = std::getenv("CPCSE_TRACE_LINEOFF_MAX");

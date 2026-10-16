@@ -179,6 +179,7 @@ void GuiShell::sectionVideo(bool asMenu) {
     static const Choice patterns[] = {
         { "As the set", "auto", "A colour set (CTM 640/644, CM14) has a slot mask;\na green or grey set (GT 64/65, MM12) shows scanlines." },
         { "Slot mask", "slot", "The phosphor stripes and slots of a colour tube" },
+        { "Soft slot mask", "soft", "Fine dark lines over the picture, each pixel's colour kept whole\n(the look ACE-DL gives a CTM)" },
         { "Scanlines", "scanlines", "Dark lines between the CPC's lines" },
         { "None", "none", nullptr } };
     choiceRow(asMenu, patterns, host.crtPattern, [this](const char* v) { host.crtPattern = v; });

@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
+#include <functional>
+#include <thread>
 
 #ifdef _WIN32
 #  ifndef WIN32_LEAN_AND_MEAN
@@ -163,6 +165,18 @@ void ledGrid(std::initializer_list<LedItem> items, float column) {
     }
 }
 
+// work(begin, end) over 0..n in bands, one thread a band (up to 8), all done on return. Each
+// band writes only its own rows, so the result is the same as one pass over 0..n.
+static void inBands(int n, const std::function<void(int, int)>& work) {
+    const int parts = std::clamp((int)std::thread::hardware_concurrency(), 1, 8);
+    if (parts <= 1 || n < 64) { work(0, n); return; }
+    const int step = (n + parts - 1) / parts;
+    std::vector<std::thread> pool;
+    for (int b = step; b < n; b += step) pool.emplace_back(work, b, std::min(n, b + step));
+    work(0, std::min(n, step));
+    for (std::thread& t : pool) t.join();
+}
+
 void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<uint32_t>& out) {
     w = std::max(1, w); h = std::max(1, h);
     const size_t n = (size_t)w * (size_t)h;
@@ -182,35 +196,41 @@ void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<u
     k[(size_t)r] = (uint32_t)((int)k[(size_t)r] + 256 - total);
     // Red and blue in one word (bits 0-15 and 16-31), green in another (bits 8-23): a channel
     // times weights that add up to 256 is at most 65280, so the fields never meet.
-    std::vector<uint32_t> rb((size_t)w), g((size_t)w), pad((size_t)(w + 2 * r));
-    auto put = [&](uint32_t* to) {
+    // (each band has its own sums and padded row)
+    auto put = [w](uint32_t* to, const std::vector<uint32_t>& rb, const std::vector<uint32_t>& g) {
         for (int x = 0; x < w; x++)
             to[x] = 0xff000000u | ((rb[(size_t)x] + 0x00800080u) >> 8 & 0x00ff00ffu) | ((g[(size_t)x] + 0x00008000u) >> 8 & 0x0000ff00u);
     };
     // across: each row with its edge pixels repeated r times each side
     std::vector<uint32_t> across(n);
-    for (int y = 0; y < h; y++) {
-        const uint32_t* row = src + (size_t)y * (size_t)w;
-        for (int x = 0; x < r; x++) { pad[(size_t)x] = row[0]; pad[(size_t)(w + r + x)] = row[w - 1]; }
-        std::copy(row, row + w, pad.begin() + r);
-        std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
-        for (int i = 0; i <= 2 * r; i++) {
-            const uint32_t kk = k[(size_t)i];
-            const uint32_t* p = pad.data() + i;
-            for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+    inBands(h, [&](int y0, int y1) {
+        std::vector<uint32_t> rb((size_t)w), g((size_t)w), pad((size_t)(w + 2 * r));
+        for (int y = y0; y < y1; y++) {
+            const uint32_t* row = src + (size_t)y * (size_t)w;
+            for (int x = 0; x < r; x++) { pad[(size_t)x] = row[0]; pad[(size_t)(w + r + x)] = row[w - 1]; }
+            std::copy(row, row + w, pad.begin() + r);
+            std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
+            for (int i = 0; i <= 2 * r; i++) {
+                const uint32_t kk = k[(size_t)i];
+                const uint32_t* p = pad.data() + i;
+                for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+            }
+            put(across.data() + (size_t)y * (size_t)w, rb, g);
         }
-        put(across.data() + (size_t)y * (size_t)w);
-    }
+    });
     // down: the rows above and below (the edge rows repeated)
-    for (int y = 0; y < h; y++) {
-        std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
-        for (int i = -r; i <= r; i++) {
-            const uint32_t kk = k[(size_t)(i + r)];
-            const uint32_t* p = across.data() + (size_t)std::clamp(y + i, 0, h - 1) * (size_t)w;
-            for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+    inBands(h, [&](int y0, int y1) {
+        std::vector<uint32_t> rb((size_t)w), g((size_t)w);
+        for (int y = y0; y < y1; y++) {
+            std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
+            for (int i = -r; i <= r; i++) {
+                const uint32_t kk = k[(size_t)(i + r)];
+                const uint32_t* p = across.data() + (size_t)std::clamp(y + i, 0, h - 1) * (size_t)w;
+                for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+            }
+            put(out.data() + (size_t)y * (size_t)w, rb, g);
         }
-        put(out.data() + (size_t)y * (size_t)w);
-    }
+    });
 }
 
 void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
@@ -229,14 +249,16 @@ void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float str
     std::vector<int> sx((size_t)w);
     for (int x = 0; x < w; x++) sx[(size_t)x] = std::min(sw - 1, (int)((long long)x * sw / w));
     out.resize((size_t)w * (size_t)h);
-    for (int y = 0; y < h; y++) {
-        const uint32_t* row = src + (size_t)std::min(sh - 1, (int)((long long)y * sh / h)) * (size_t)sw;
-        uint32_t* o = out.data() + (size_t)y * (size_t)w;
-        for (int x = 0; x < w; x++) {
-            const uint32_t v = row[sx[(size_t)x]];
-            o[x] = (((v & 0xff00ffu) * k >> 8) & 0xff00ffu) | (((v & 0x00ff00u) * k >> 8) & 0x00ff00u) | 0xff000000u;
+    inBands(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; y++) {
+            const uint32_t* row = src + (size_t)std::min(sh - 1, (int)((long long)y * sh / h)) * (size_t)sw;
+            uint32_t* o = out.data() + (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                const uint32_t v = row[sx[(size_t)x]];
+                o[x] = (((v & 0xff00ffu) * k >> 8) & 0xff00ffu) | (((v & 0x00ff00u) * k >> 8) & 0x00ff00u) | 0xff000000u;
+            }
         }
-    }
+    });
     if (s <= 0.0) return;
     // each pixel's offset in the source and in `out`, split into its across and along parts
     // (the stripes run along; turned swaps the screen's axes)
@@ -250,7 +272,10 @@ void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float str
         srcL[(size_t)l] = turned ? (size_t)sx[(size_t)l] : (size_t)std::min(sh - 1, (int)((long long)l * sh / h)) * (size_t)sw;
         outL[(size_t)l] = turned ? (size_t)l : (size_t)l * (size_t)w;
     }
-    for (int t = 0; t * triad < across; t++)
+    // the triads in bands: each writes only its own stripes (a0..a1 never overlap)
+    const int triads = (across + triad - 1) / triad;
+    inBands(triads, [&](int t0, int t1) {
+    for (int t = t0; t < t1; t++)
         for (int c = 0; c < 3; c++) {
             const int a0 = t * triad + c * stripe, a1 = std::min(a0 + lit, across);
             if (a0 >= across) break;
@@ -272,6 +297,44 @@ void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float str
                     }
             }
         }
+    });
+}
+
+void softMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
+                    std::vector<uint32_t>& out) {
+    w = std::max(1, w); h = std::max(1, h);
+    stripe = std::clamp(stripe, 1, 8);
+    const double s = std::clamp((double)strength, 0.0, 1.0);
+    const int triad = 3 * stripe, slotPeriod = 4 * stripe;
+    // the light the lines take, given back (clipped at full): 1/3 of the width at 1 - s, a
+    // quarter of the rows at 1 - s/2
+    const double mean = (2.0 + (1.0 - s)) / 3.0 * (3.0 + (1.0 - s * 0.5)) / 4.0;
+    const double gain = 1.0 / std::max(0.2, mean);
+    // three levels, as 1/256ths with the gain in: lit, a bridge row, a line (and a crossing)
+    const uint32_t litK = (uint32_t)std::lround(256.0 * gain);
+    const uint32_t bridgeK = (uint32_t)std::lround(256.0 * gain * (1.0 - s * 0.5));
+    const uint32_t lineK = (uint32_t)std::lround(256.0 * gain * (1.0 - s));
+    std::vector<int> sx((size_t)w);
+    for (int x = 0; x < w; x++) sx[(size_t)x] = std::min(sw - 1, (int)((long long)x * sw / w));
+    out.resize((size_t)w * (size_t)h);
+    auto scaled = [](uint32_t v, uint32_t k) {
+        const uint32_t r = std::min(255u, (v & 255) * k >> 8), g = std::min(255u, (v >> 8 & 255) * k >> 8), b = std::min(255u, (v >> 16 & 255) * k >> 8);
+        return 0xff000000u | b << 16 | g << 8 | r;
+    };
+    inBands(h, [&](int y0, int y1) {
+        for (int y = y0; y < y1; y++) {
+            const uint32_t* row = src + (size_t)std::min(sh - 1, (int)((long long)y * sh / h)) * (size_t)sw;
+            uint32_t* o = out.data() + (size_t)y * (size_t)w;
+            for (int x = 0; x < w; x++) {
+                // the stripes run along: across is x (y when turned)
+                const int a = turned ? y : x, l = turned ? x : y;
+                const bool line = a % triad >= 2 * stripe;                       // one line in three stripes
+                const int stagger = (a / triad & 1) * (slotPeriod / 2);          // the slots of next triads offset
+                const bool bridge = (l + stagger) % slotPeriod >= 3 * stripe;
+                o[x] = scaled(row[sx[(size_t)x]], line ? lineK : bridge ? bridgeK : litK);
+            }
+        }
+    });
 }
 
 bool checkboxWrapped(const char* label, bool* v) {

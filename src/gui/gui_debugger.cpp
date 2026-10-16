@@ -189,6 +189,7 @@ void Debugger::runTo(int address) {
 }
 
 void Debugger::setPc(int address) {
+    host.timelineEdited();
     if (!host.booted()) return;
     host.emu->cpu->pc = address & 0xffff;
     host.emu->cpu->halted = false;

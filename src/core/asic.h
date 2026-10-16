@@ -78,6 +78,9 @@ public:
     void advanceUnlock(int value);
     void setPlusPalette(int index, int value);
     void writeAsicRam(int address, int value, int previous);
+    // The raster timing overlay: a palette write noted (set by the machine while it is on).
+    void (*onPaletteWrite)(void* context, int address, int value) = nullptr;
+    void* onPaletteWriteContext = nullptr;
     void writeAsicRam(int address, int value);
     int readAsicRam(int address);
     void updateDmaStatusRam();

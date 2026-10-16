@@ -37,8 +37,11 @@ int spriteClipLeft(int displayLeft, const RasterLine* state, int extendBorder = 
 struct PenState {
     bool present = false;
     bool locked = false;
-    std::vector<int> gaPalette;
-    std::vector<int> palette;
+    // the palettes of the record it comes from (a RasterLine or RasterSegment, which outlives
+    // the render), not copies: two vectors a line were two allocations a line. Read only when
+    // present.
+    const std::vector<int>* gaPalette = nullptr;
+    const std::vector<int>* palette = nullptr;
     int mode = 0;
     int modeBefore = 0;
     int modeSwitchPixel = -1;   // ACCC §9.3.4's split byte; -1 = none
@@ -136,6 +139,7 @@ public:
     // position, exactly as the hardware paints the tube. beamFront is the
     // displayed frame; beamBack accumulates the frame in progress.
     bool beamMode = false;
+    bool drawIoMarks = false;     // the raster timing overlay: each line's RasterLine::ioMarks drawn on it
     std::vector<uint32_t> beamFront, beamBack;
     int beamCol = 0, beamRow = 0;                 // beam position, driven by C-HSYNC/C-VSYNC
     // ACCC §9.3.4.3's "purple pixel" — the Pixel-M2 that comes back in the previous

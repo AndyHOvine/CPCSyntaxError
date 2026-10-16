@@ -162,6 +162,16 @@ public:
     void (*pixelSink)(void*) = nullptr;
     void* pixelSinkContext = nullptr;
     std::function<void()> onPixel;
+    // A character with no event of this chip in it (no C-HSYNC rise or fall, no pin fall
+    // due) keeps C-SYNC as it is for all 16 Pixel-M2. Then pixelRunSink takes the 16 in one
+    // call (the same context); it clocks them one at a time itself if it cannot.
+    void (*pixelRunSink)(void*, int) = nullptr;
+    bool quietCharacter() const {
+        const int from = h06Pixels, to = h06Pixels + PIXELS_PER_CHARACTER;
+        return !(from < CHSYNC_RISE_PIXELS && CHSYNC_RISE_PIXELS <= to)
+            && !(from < CHSYNC_FALL_PIXELS && CHSYNC_FALL_PIXELS <= to)
+            && (hsyncPinFallIn <= 0 || hsyncPinFallIn > PIXELS_PER_CHARACTER);
+    }
     int h06Pixels = 0;                  // Pixel-M2 since HSYNC-CRTC rose
     long tipTraceBudget = 0;            // diagnostic: log this many C-HSYNC ends
     // §16.2.2: C-HSYNC "becomes active ... before the end of the 2 µs if R3l>=2" and

@@ -46,6 +46,8 @@
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
+#include <sstream>
+#include <cstring>
 
 namespace cpcse {
 
@@ -75,6 +77,9 @@ void EmuHost::setBeamRenderer(bool on) {
 
 EmuHost::EmuHost() {
     emu = new GX4000();
+    // the timeline: every input to the keyboard matrix logged; a replay's inputs fed back
+    emu->keyboard->onInput = [this](const InputEvent& e) { timelineLog(e); };
+    emu->onInputDue = [this]() { timelineApplyDue(); };
     if (emu->fdc) emu->fdc->onDiskModified = [this](std::shared_ptr<Disk> disk, int drive) {
         if (drive >= 0 && drive < 2 && disk && disk == emu->fdc->drives[(size_t)drive]) { diskDirty[drive] = true; diskLastWrite[drive] = framesRun; }
     };
@@ -217,6 +222,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
         catch (const std::exception& ex) { status = ex.what(); return false; }
     }
     flushDisks();
+    timelineEpoch += 1;                   // a new machine: the timeline starts again
     ModelProfile& m = models[index];
     if (index != currentModel) { osRomPath.clear(); basicRomPath.clear(); amsdosRomPath.clear(); }  // different model → different firmware
 
@@ -543,14 +549,20 @@ bool EmuHost::symbifaceMouseActive() const {
 }
 
 void EmuHost::mouseMove(float dx, float dy) {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseMove; e.x = dx; e.y = dy; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->move(dx, dy);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->move(dx, dy);
 }
 void EmuHost::mouseButton(int index, bool pressed) {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseButton; e.a = index; e.b = pressed ? 1 : 0; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->button(index, pressed);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->button(index, pressed);
 }
 void EmuHost::mouseScroll(float delta) {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseScroll; e.x = delta; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->scroll(delta);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->scroll(delta);
 }
@@ -663,7 +675,11 @@ void EmuHost::applyLightgun() {
     emu->crtc->setTrojanLightgunEnabled(on);
 }
 void EmuHost::lightgunAim(double x, double y, bool trigger) {
-    if (!emu || !lightgunActive()) return;
+    if (!emu || !lightgunActive() || liveInputBlocked()) return;
+    // logged as one input: the trigger it sets inside is not logged again
+    const bool outer = !applyingInput;
+    if (outer) { InputEvent e; e.kind = InputEvent::LightgunAim; e.x = x; e.y = y; e.a = trigger ? 1 : 0; timelineLog(e); }
+    struct Inner { bool& f; bool was; Inner(bool& f) : f(f), was(f) { f = true; } ~Inner() { f = was; } } inner(applyingInput);
     if (x < 0 || y < 0) { emu->crtc->releaseTrojanLightgun(); emu->keyboard->setLightgunTrigger(false); return; }
     emu->crtc->setTrojanLightgun(x, y, trigger, SCREEN_W, SCREEN_H);
     emu->keyboard->setLightgunTrigger(trigger);
@@ -997,10 +1013,14 @@ bool EmuHost::tapePaused() const { CPCTapeDrive* d = tapeDeck(); return d && d->
 
 
 void EmuHost::tapePlay() {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_PLAY; timelineLog(e); }
     if (CPCTapeDrive* d = tapeDeck()) { d->play(); status = d->playing ? "Tape playing" : "The tape is at its end: rewind it"; }
 }
 
 void EmuHost::tapePause() {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_PAUSE; timelineLog(e); }
     CPCTapeDrive* d = tapeDeck();
     if (!d || !d->playing) return;
     d->setPaused(!d->paused);
@@ -1008,14 +1028,20 @@ void EmuHost::tapePause() {
 }
 
 void EmuHost::tapeRewind() {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_REWIND; timelineLog(e); }
     if (CPCTapeDrive* d = tapeDeck()) { d->rewind(); status = "Tape rewound"; }
 }
 
 void EmuHost::tapeRewindBlock() {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_REWIND_BLOCK; timelineLog(e); }
     if (CPCTapeDrive* d = tapeDeck()) { d->rewindBlock(); status = "Tape at block " + std::to_string(d->blockAtPosition() + 1); }
 }
 
 void EmuHost::tapeFastForward() {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_FAST_FORWARD; timelineLog(e); }
     if (CPCTapeDrive* d = tapeDeck()) {
         d->fastForward();
         status = d->tapeEnded ? std::string("Tape at its end") : "Tape at block " + std::to_string(d->blockAtPosition() + 1);
@@ -1023,6 +1049,8 @@ void EmuHost::tapeFastForward() {
 }
 
 void EmuHost::tapeSeekBlock(int index) {
+    if (liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_SEEK; e.b = index; timelineLog(e); }
     if (CPCTapeDrive* d = tapeDeck()) { d->seekBlock(index); status = "Tape at block " + std::to_string(d->blockAtPosition() + 1); }
 }
 
@@ -1075,7 +1103,7 @@ void EmuHost::enableCheat(size_t index, bool on) {
     if (index >= cheatList.cheats.size()) return;
     Cheat& c = cheatList.cheats[index];
     c.enabled = on;
-    if (on && !c.freeze) if (Bytes* r = ram()) CheatList::poke(*r, c);
+    if (on && !c.freeze) if (Bytes* r = ram()) { CheatList::poke(*r, c); timelineEdited(); }
 }
 
 bool EmuHost::tapeTurboActive() const {
@@ -1096,6 +1124,7 @@ void EmuHost::tapeNewBlank() {
 
 void EmuHost::tapeRecord() {
     if (!emu || !emu->tape) return;
+    timelineEdited();                     // a recording writes the tape image
     if (!tapeDeck()) tapeNewBlank();
     CPCTapeDrive* d = tapeDeck();
     if (!d) return;
@@ -1104,9 +1133,13 @@ void EmuHost::tapeRecord() {
 }
 
 void EmuHost::tapeStop() {
+    if (liveInputBlocked()) return;
     CPCTapeDrive* d = tapeDeck();
     if (!d) return;
     const bool wasRecording = d->recording;
+    // a recording ending rebuilds the tape image: the timeline starts again; else a button
+    if (wasRecording) timelineEdited();
+    else if (!applyingInput) { InputEvent e; e.kind = InputEvent::TapeDeck; e.a = InputEvent::DECK_STOP; timelineLog(e); }
     d->stop();
     if (wasRecording) {
         d->stopRecording();
@@ -1173,6 +1206,7 @@ bool EmuHost::saveSnapshot(const std::string& path) {
 }
 
 bool EmuHost::loadSnapshot(const std::string& path) {
+    timelineEpoch += 1;
     bool ok = false;
     Bytes data = readFile(path, ok);
     if (!ok || data.empty()) { status = "Could not read snapshot."; return false; }
@@ -1225,9 +1259,448 @@ bool EmuHost::ejectSnapshot() {
 }
 
 void EmuHost::reset() {
-    if (!booted()) return;
+    if (!booted() || liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::Reset; timelineLog(e); }
     emu->reset();
     status = "Reset";
+}
+void EmuHost::timelineEdited() {
+    timelineEpoch += 1;
+    if (movieRec) { movieRec = false; movieStatus = "An edit stopped the movie's recording (it could not be played back)."; }
+}
+
+// ============================================================== the timeline
+std::string EmuHost::timelineFingerprint() const {
+    std::string f = std::to_string(currentModel) + "|" + std::to_string(ramKiB) + "|" + std::to_string(emu && emu->crtc ? emu->crtc->type : -1)
+        + "|" + std::to_string(gateArrayPart) + "|" + (z80Cmos ? "c" : "n") + "|" + dacType + "|" + lightgunType + "|"
+        + (v9990Enabled ? "v" : "") + (opl4Enabled ? "o" : "") + (playCityEnabled ? "p" : "") + (m4Enabled ? "m" : "")
+        + (serialEnabled ? "s" : "") + (multifaceEnabled ? "f" : "") + (gx4000Ram128 ? "g" : "") + (plusExpansionClassic ? "e" : "")
+        + "|" + speechKind + "|" + symbifaceModule + "|" + diskName[0] + "|" + diskName[1] + "|" + tapeName + "|" + cartName;
+    for (const auto& r : expansionRoms) f += "|" + std::to_string(r.slot) + ":" + r.name;
+    return f;
+}
+void EmuHost::timelineClear() {
+    snapshots.clear();
+    inputLog.clear();
+    frameStarts.clear();
+    replayAt = 0;
+    snapshotBytes = 0;
+    framesSinceSnapshot = timelineInterval;      // the next frame's end takes one
+    liveEnd = emu ? emu->instructions : 0;
+    if (emu) emu->inputDueAt = UINT64_MAX;
+}
+EmuHost::TimelineInfo EmuHost::timelineInfo() const {
+    TimelineInfo i;
+    i.oldest = snapshots.empty() ? 0 : snapshots.front()->instructions;
+    i.now = emu ? emu->instructions : 0;
+    i.liveEnd = std::max(liveEnd, i.now);
+    i.snapshots = snapshots.size(); i.inputs = inputLog.size(); i.bytes = snapshotBytes;
+    return i;
+}
+void EmuHost::timelineFrameStart() {
+    if (!emu) return;
+    if (!timelineEnabled && !moviePlay_) { if (!snapshots.empty() || !inputLog.empty()) timelineClear(); return; }
+    // a different machine, other media, a reset: what came before does not lead here
+    const std::string setup = timelineFingerprint();
+    if (setup != timelineSetup || timelineEpoch != timelineEpochSeen) {
+        timelineClear();
+        timelineSetup = setup;
+        timelineEpochSeen = timelineEpoch;
+    }
+    const uint64_t at = emu->instructions;
+    if (frameStarts.empty() || at > frameStarts.back()) frameStarts.push_back(at);
+    else {
+        auto it = std::lower_bound(frameStarts.begin(), frameStarts.end(), at);
+        if (it == frameStarts.end() || *it != at) frameStarts.insert(it, at);
+    }
+}
+void EmuHost::timelineFrameEnd() {
+    if (!emu || !timelineEnabled) return;
+    liveEnd = std::max(liveEnd, emu->instructions);
+    if (++framesSinceSnapshot < timelineInterval && !snapshots.empty()) return;
+    if (!snapshots.empty() && emu->instructions <= snapshots.back()->instructions) return;   // replaying: there is one ahead
+    std::unique_ptr<MachineSnapshot> s = MachineSnapshot::capture(*emu);
+    snapshotBytes += s->bytes;
+    snapshots.push_back(std::move(s));
+    framesSinceSnapshot = 0;
+    // the budget: the oldest go, and the inputs and frames before the new oldest with them
+    const size_t budget = (size_t)std::max(16, timelineBudgetMB) * 1024 * 1024;
+    while (snapshotBytes > budget && snapshots.size() > 2) {
+        snapshotBytes -= snapshots.front()->bytes;
+        snapshots.pop_front();
+    }
+    const uint64_t oldest = snapshots.front()->instructions;
+    size_t drop = 0;
+    while (drop < inputLog.size() && inputLog[drop].at < oldest) drop++;
+    if (drop > 0) { inputLog.erase(inputLog.begin(), inputLog.begin() + (long)drop); replayAt = replayAt > drop ? replayAt - drop : 0; }
+    while (!frameStarts.empty() && frameStarts.front() < oldest) frameStarts.pop_front();
+}
+void EmuHost::timelineTruncate() {
+    // a new input after going back: the inputs, snapshots and frames of the old future go
+    const uint64_t now = emu->instructions;
+    if (replayAt < inputLog.size()) inputLog.resize(replayAt);
+    while (!snapshots.empty() && snapshots.back()->instructions > now) { snapshotBytes -= snapshots.back()->bytes; snapshots.pop_back(); }
+    while (!frameStarts.empty() && frameStarts.back() > now) frameStarts.pop_back();
+    liveEnd = now;
+    emu->inputDueAt = UINT64_MAX;
+}
+void EmuHost::timelineLog(InputEvent e) {
+    if (applyingInput || !emu) return;
+    e.at = emu->instructions;
+    if (movieRec) movieEvents.push_back(e);
+    if (!timelineEnabled) return;
+    if (emu->instructions < liveEnd || replayAt < inputLog.size()) timelineTruncate();
+    inputLog.push_back(e);
+    replayAt = inputLog.size();
+    liveEnd = std::max(liveEnd, e.at);
+}
+void EmuHost::timelineApply(const InputEvent& e) {
+    KeyboardMatrix& k = *emu->keyboard;
+    switch (e.kind) {
+        case InputEvent::Key: k.setKey(e.code, e.a != 0, e.text, e.b); break;
+        case InputEvent::Joystick: k.setJoystick(e.a, e.b != 0, e.code, e.c); break;
+        case InputEvent::MatrixDirect: k.setMatrixDirect(e.a, e.b, e.c != 0); break;
+        case InputEvent::LightgunTrigger: k.setLightgunTrigger(e.a != 0); break;
+        case InputEvent::LightgunAim: lightgunAim(e.x, e.y, e.a != 0); break;
+        case InputEvent::MouseMove: mouseMove((float)e.x, (float)e.y); break;
+        case InputEvent::MouseButton: mouseButton(e.a, e.b != 0); break;
+        case InputEvent::MouseScroll: mouseScroll((float)e.x); break;
+        case InputEvent::Cheats: if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram); break;
+        case InputEvent::Reset: reset(); break;
+        case InputEvent::TapeDeck:
+            switch (e.a) {
+                case InputEvent::DECK_PLAY: tapePlay(); break;
+                case InputEvent::DECK_PAUSE: tapePause(); break;
+                case InputEvent::DECK_REWIND: tapeRewind(); break;
+                case InputEvent::DECK_REWIND_BLOCK: tapeRewindBlock(); break;
+                case InputEvent::DECK_FAST_FORWARD: tapeFastForward(); break;
+                case InputEvent::DECK_SEEK: tapeSeekBlock(e.b); break;
+                case InputEvent::DECK_STOP: tapeStop(); break;
+                default: break;
+            }
+            break;
+    }
+}
+void EmuHost::timelineApplyDue() {
+    const bool was = applyingInput;
+    applyingInput = true;
+    while (replayAt < inputLog.size() && inputLog[replayAt].at <= emu->instructions) {
+        const InputEvent& e = inputLog[replayAt++];
+        if (movieRec) movieEvents.push_back(e);          // recording after going back: the history replayed is the movie's
+        timelineApply(e);
+    }
+    applyingInput = was;
+    emu->inputDueAt = replayAt < inputLog.size() ? inputLog[replayAt].at : UINT64_MAX;
+}
+bool EmuHost::timelineGoTo(uint64_t target) {
+    if (!booted()) return false;
+    if (!timelineEnabled || snapshots.empty()) { timelineMessage = "The timeline is off, or has no snapshot yet."; return false; }
+    const uint64_t end = std::max(liveEnd, emu->instructions);
+    if (target > end) target = end;
+    // the snapshot: the last one at or before the point -- one more back when that leaves
+    // less than two frames to run, so the picture is made again on the way
+    int pick = -1;
+    for (int i = (int)snapshots.size() - 1; i >= 0; i--) if (snapshots[(size_t)i]->instructions <= target) { pick = i; break; }
+    if (pick < 0) { timelineMessage = "That is before the oldest snapshot."; return false; }
+    {
+        const uint64_t from = snapshots[(size_t)pick]->instructions;
+        const long frames = std::count_if(frameStarts.begin(), frameStarts.end(), [&](uint64_t f) { return f > from && f <= target; });
+        if (frames < 2 && pick > 0) pick -= 1;
+    }
+    const MachineSnapshot& s = *snapshots[(size_t)pick];
+    if (movieRec) {
+        while (!movieEvents.empty() && movieEvents.back().at >= s.instructions) movieEvents.pop_back();
+        while (!movieChecks.empty() && movieChecks.back().at > s.instructions) movieChecks.pop_back();
+    }
+    s.restore(*emu);
+    replayAt = (size_t)(std::lower_bound(inputLog.begin(), inputLog.end(), s.instructions,
+                                         [](const InputEvent& e, uint64_t v) { return e.at < v; }) - inputLog.begin());
+    emu->inputDueAt = replayAt < inputLog.size() ? inputLog[replayAt].at : UINT64_MAX;
+    // on to the point: the frames' starts as they came (the cheats' freezes went in there)
+    auto frame = std::lower_bound(frameStarts.begin(), frameStarts.end(), s.instructions);
+    while (emu->instructions < target) {
+        while (frame != frameStarts.end() && *frame < emu->instructions) ++frame;
+        if (frame != frameStarts.end() && *frame == emu->instructions) { if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram); ++frame; }
+        emu->stepInstruction();
+    }
+    emu->debuggerPaused = false;        // a trigger on the way (the logic analyser) is not a stop
+    drainAudio();
+    audioOut.clear();
+    render();
+    char b[96];
+    std::snprintf(b, sizeof b, "Back to instruction %llu (PC &%04X)", (unsigned long long)target, emu->cpu->pc & 0xffff);
+    timelineMessage = b;
+    return true;
+}
+// ============================================================== input movies
+uint64_t EmuHost::movieStateHash() const {
+    uint64_t h = 1469598103934665603ull;
+    auto word = [&](uint64_t v) { h = (h ^ v) * 1099511628211ull; h ^= h >> 29; };
+    const Bytes& ram = emu->memory->ram;
+    for (size_t i = 0; i + 8 <= ram.size(); i += 8) { uint64_t v; std::memcpy(&v, ram.data() + i, 8); word(v); }
+    const Z80& z = *emu->cpu;
+    for (int v : { z.a, z.f, z.b, z.c, z.d, z.e, z.h, z.l, z.ix, z.iy, z.sp, z.pc, z.i, (int)z.iff1, (int)z.halted }) word((uint64_t)v);
+    for (int v : { emu->crtc->horizontal, emu->crtc->vertical, emu->crtc->raster, emu->gateArray->mode }) word((uint64_t)v);
+    word((uint64_t)(emu->machineCycles - movieStartCycles));
+    word(emu->instructions - movieStartAt);
+    return h;
+}
+void EmuHost::moviePowerOn() {
+    // the reset, the drives and the tape as they are at a power-on: the same every time
+    const bool was = applyingInput;
+    applyingInput = true;                 // none of this is an input of the movie
+    paused = false;
+    emu->reset();
+    if (emu->fdc) emu->fdc->powerOn();
+    if (CPCTapeDrive* d = tapeDeck()) { d->stop(); d->rewind(); }
+    applyingInput = was;
+    typed.clear(); typedAt = 0; typedPhase = 0;
+    timelineEpoch += 1;                   // a new start: the timeline begins again here
+    timelineClear();
+    timelineSetup = timelineFingerprint();
+    timelineEpochSeen = timelineEpoch;
+    movieStartAt = emu->instructions;
+    movieStartCycles = emu->machineCycles;
+    movieStartHash = movieStateHash();
+}
+bool EmuHost::movieRecord(std::string& why) {
+    if (!booted()) { why = "No machine is running."; return false; }
+    movieStop();
+    moviePowerOn();
+    movieEvents.clear(); movieChecks.clear(); movieFrames = 0;
+    movieRec = true;
+    movieStatus = "Recording a movie from power-on";
+    status = movieStatus;
+    return true;
+}
+static std::string movieHex(const std::string& s) {
+    if (s.empty()) return "-";
+    static const char* d = "0123456789abcdef";
+    std::string o;
+    for (unsigned char c : s) { o += d[c >> 4]; o += d[c & 15]; }
+    return o;
+}
+static std::string movieUnhex(const std::string& s) {
+    if (s == "-") return "";
+    std::string o;
+    for (size_t i = 0; i + 1 < s.size(); i += 2) o += (char)std::strtol(s.substr(i, 2).c_str(), nullptr, 16);
+    return o;
+}
+bool EmuHost::movieSave(const std::string& path, std::string& why) {
+    if (!movieRec) { why = "No movie is being recorded."; return false; }
+    movieEndAt = emu->instructions;
+    std::string text = "CPCSE-MOVIE 1\n";
+    char b[512];
+    text += "setup " + movieHex(timelineFingerprint()) + "\n";
+    std::snprintf(b, sizeof b, "start %016llx\nend %llu\n", (unsigned long long)movieStartHash, (unsigned long long)(movieEndAt - movieStartAt));
+    text += b;
+    for (const InputEvent& e : movieEvents) {
+        std::snprintf(b, sizeof b, "e %llu %d %d %d %d %.17g %.17g ", (unsigned long long)(e.at - movieStartAt), (int)e.kind, e.a, e.b, e.c, e.x, e.y);
+        text += b + movieHex(e.code) + " " + movieHex(e.text) + "\n";
+    }
+    for (const MovieCheck& c : movieChecks) {
+        std::snprintf(b, sizeof b, "c %llu %016llx\n", (unsigned long long)(c.at - movieStartAt), (unsigned long long)c.hash);
+        text += b;
+    }
+    {
+        std::ofstream f(std::filesystem::u8path(path), std::ios::binary | std::ios::trunc);
+        if (!f) { why = "Could not write " + path; return false; }
+        f.write(text.data(), (std::streamsize)text.size());
+        f.close();
+        if (!f) { why = "Could not write " + path + " (disc full?)"; return false; }
+    }
+    movieRec = false;
+    char s[160];
+    std::snprintf(s, sizeof s, "Movie saved: %.1f s, %zu inputs", (double)(emu->machineCycles - movieStartCycles) / 4000000.0, movieEvents.size());
+    movieStatus = s;
+    status = s;
+    return true;
+}
+bool EmuHost::moviePlay(const std::string& path, std::string& why) {
+    if (!booted()) { why = "No machine is running."; return false; }
+    bool ok = false;
+    const Bytes raw = readFile(path, ok);
+    if (!ok) { why = "Could not read " + path; return false; }
+    std::istringstream in(std::string(raw.begin(), raw.end()));
+    std::string line, setup;
+    unsigned long long startHash = 0, end = 0;
+    std::vector<InputEvent> events;
+    std::vector<MovieCheck> checks;
+    if (!std::getline(in, line) || line.rfind("CPCSE-MOVIE 1", 0) != 0) { why = "Not a movie of this program."; return false; }
+    while (std::getline(in, line)) {
+        std::istringstream l(line);
+        std::string tag;
+        l >> tag;
+        if (tag == "setup") { std::string h; l >> h; setup = movieUnhex(h); }
+        else if (tag == "start") l >> std::hex >> startHash >> std::dec;
+        else if (tag == "end") l >> end;
+        else if (tag == "e") {
+            InputEvent e; unsigned long long at = 0; int kind = 0; std::string code, text;
+            l >> at >> kind >> e.a >> e.b >> e.c >> e.x >> e.y >> code >> text;
+            if (!l) { why = "The movie's file is damaged."; return false; }
+            e.at = at; e.kind = (InputEvent::Kind)kind; e.code = movieUnhex(code); e.text = movieUnhex(text);
+            events.push_back(e);
+        } else if (tag == "c") {
+            unsigned long long at = 0, hash = 0;
+            l >> at >> std::hex >> hash >> std::dec;
+            checks.push_back({ at, hash });
+        }
+    }
+    if (setup != timelineFingerprint()) {
+        why = "This movie was made with another machine or other media. It needs: " + setup + "  (now: " + timelineFingerprint() + ")";
+        return false;
+    }
+    movieStop();
+    moviePowerOn();
+    const bool sameStart = movieStartHash == startHash;
+    for (InputEvent& e : events) e.at += movieStartAt;
+    for (MovieCheck& c : checks) c.at += movieStartAt;
+    inputLog = std::move(events);
+    replayAt = 0;
+    emu->inputDueAt = inputLog.empty() ? UINT64_MAX : inputLog[0].at;
+    movieEndAt = movieStartAt + end;
+    liveEnd = movieEndAt;
+    movieChecks = std::move(checks);
+    movieCheckAt = 0; movieChecked = 0; movieOutOfStep = false; movieFrames = 0;
+    moviePlay_ = true;
+    movieStatus = sameStart ? "Playing a movie" : "Playing a movie (the machine at power-on is not the same as when it was made)";
+    status = movieStatus;
+    return true;
+}
+void EmuHost::movieStop() {
+    if (movieRec) { movieRec = false; movieStatus = "Movie recording stopped (not saved)"; }
+    if (moviePlay_) { moviePlay_ = false; movieStatus = "Movie stopped"; }
+}
+void EmuHost::movieFrameEnd() {
+    if (!movieRec && !moviePlay_) return;
+    if (paused || emu->debuggerPaused) return;            // a stop part-way through a frame: no check here
+    const uint64_t at = emu->instructions;
+    char s[200];
+    if (movieRec) {
+        if (++movieFrames % 50 == 0) movieChecks.push_back({ at, movieStateHash() });
+        std::snprintf(s, sizeof s, "Recording a movie: %.0f s, %zu inputs", (double)(emu->machineCycles - movieStartCycles) / 4000000.0, movieEvents.size());
+        movieStatus = s;
+        return;
+    }
+    // playing: every 50th whole frame, the check made at the same one -- at the same
+    // instruction with the same hash, or the run is out of step (a run that is out of step
+    // ends its frames at other instructions, so the count is compared as well)
+    if (++movieFrames % 50 == 0 && movieCheckAt < movieChecks.size()) {
+        const MovieCheck& c = movieChecks[movieCheckAt++];
+        if ((c.at != at || movieStateHash() != c.hash) && !movieOutOfStep) {
+            movieOutOfStep = true;
+            std::snprintf(s, sizeof s, "The movie went out of step %.1f s in", (double)(emu->machineCycles - movieStartCycles) / 4000000.0);
+            movieStatus = s;
+            status = s;
+        } else if (!movieOutOfStep) movieChecked++;
+    }
+    if (at >= movieEndAt) {
+        moviePlay_ = false;
+        std::snprintf(s, sizeof s, movieOutOfStep ? "Movie ended: OUT OF STEP (%d checks in step before)" : "Movie ended: in step to the end (%d checks)", movieChecked);
+        movieStatus = s;
+        status = s;
+        return;
+    }
+    if (!movieOutOfStep) {
+        std::snprintf(s, sizeof s, "Playing a movie: %.0f of %.0f s, in step (%d checks)", (double)(emu->machineCycles - movieStartCycles) / 4000000.0,
+                      (double)(movieEndAt - movieStartAt) / std::max(1.0, (double)(at - movieStartAt) / std::max(1.0, (double)(emu->machineCycles - movieStartCycles) / 4000000.0)),
+                      movieChecked);
+        movieStatus = s;
+    }
+}
+
+bool EmuHost::timelineStepBack() {
+    if (!emu || emu->instructions == 0) return false;
+    return timelineGoTo(emu->instructions - 1);
+}
+bool EmuHost::timelineFrameBack() {
+    if (!emu) return false;
+    const uint64_t now = emu->instructions;
+    uint64_t target = UINT64_MAX;
+    for (auto it = frameStarts.rbegin(); it != frameStarts.rend(); ++it) if (*it < now) { target = *it; break; }
+    if (target == UINT64_MAX) { timelineMessage = "No earlier frame is recorded."; return false; }
+    return timelineGoTo(target);
+}
+bool EmuHost::timelineRewind(double seconds) {
+    if (!emu || frameStarts.empty()) { timelineMessage = "No earlier frame is recorded."; return false; }
+    const uint64_t now = emu->instructions;
+    long idx = (long)(std::upper_bound(frameStarts.begin(), frameStarts.end(), now) - frameStarts.begin()) - 1;
+    idx -= std::max(1L, (long)std::lround(seconds * 50.0));
+    idx = std::max(0L, idx);
+    uint64_t target = frameStarts[(size_t)idx];
+    if (!snapshots.empty()) target = std::max(target, snapshots.front()->instructions);
+    return timelineGoTo(target);
+}
+// The recorded time before now, newest stretch first, each replayed from its snapshot:
+// beforeStep asked before every instruction, and (watchStart >= 0) every write to
+// watchStart..watchEnd marked. lastHit: the last instruction before now so marked. The
+// machine is left wherever the search stopped (the callers go back to a point after it).
+bool EmuHost::timelineSearch(const std::function<void(uint64_t& hit)>& beforeStep, int watchStart, int watchEnd, uint64_t& lastHit) {
+    const uint64_t now = emu->instructions;
+    lastHit = UINT64_MAX;
+    auto keepHook = emu->memory->watchHook;
+    const bool keepArmed = emu->memory->watchArmed;
+    for (int i = (int)snapshots.size() - 1; i >= 0 && lastHit == UINT64_MAX; i--) {
+        const uint64_t from = snapshots[(size_t)i]->instructions;
+        if (from >= now) continue;
+        const uint64_t to = i + 1 < (int)snapshots.size() ? std::min(now, snapshots[(size_t)i + 1]->instructions) : now;
+        snapshots[(size_t)i]->restore(*emu);
+        replayAt = (size_t)(std::lower_bound(inputLog.begin(), inputLog.end(), from,
+                                             [](const InputEvent& e, uint64_t v) { return e.at < v; }) - inputLog.begin());
+        emu->inputDueAt = replayAt < inputLog.size() ? inputLog[replayAt].at : UINT64_MAX;
+        auto frame = std::lower_bound(frameStarts.begin(), frameStarts.end(), from);
+        uint64_t hit = UINT64_MAX;
+        if (watchStart >= 0) {
+            // the step that writes: GX4000::instructions counts it at its start, so the
+            // machine before it is instructions - 1
+            emu->memory->watchHook = [this, &hit, watchStart, watchEnd](int address, int, bool write) {
+                if (write && address >= watchStart && address <= watchEnd) hit = emu->instructions - 1;
+            };
+            emu->memory->watchArmed = true;
+        }
+        while (emu->instructions < to) {
+            while (frame != frameStarts.end() && *frame < emu->instructions) ++frame;
+            if (frame != frameStarts.end() && *frame == emu->instructions) { if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram); ++frame; }
+            if (beforeStep) beforeStep(hit);
+            emu->stepInstruction();
+        }
+        emu->memory->watchHook = keepHook;
+        emu->memory->watchArmed = keepArmed;
+        if (hit != UINT64_MAX && hit < now) lastHit = hit;
+    }
+    emu->debuggerPaused = false;
+    return lastHit != UINT64_MAX;
+}
+bool EmuHost::timelineRunBack() {
+    if (!booted() || snapshots.empty()) { timelineMessage = "The timeline has no snapshot yet."; return false; }
+    if (!emu->breakpoints || emu->breakpoints->empty()) { timelineMessage = "There is no breakpoint to run back to."; return false; }
+    const uint64_t now = emu->instructions;
+    uint64_t lastHit = UINT64_MAX;
+    // before each instruction, as the debugger asks going forward: the PC on a breakpoint
+    // (its condition is not asked: that would count hits and change the debugger's state)
+    const bool found = timelineSearch([this](uint64_t& hit) {
+        if (emu->breakpoints->count(emu->cpu->pc & 0xffff)) hit = emu->instructions;
+    }, -1, -1, lastHit);
+    if (!found) { timelineGoTo(now); timelineMessage = "No breakpoint was hit in the recorded time."; return false; }
+    timelineGoTo(lastHit);
+    char b[96];
+    std::snprintf(b, sizeof b, "Back to the last breakpoint hit: &%04X", emu->cpu->pc & 0xffff);
+    timelineMessage = b;
+    return true;
+}
+bool EmuHost::timelineLastWrite(int start, int end) {
+    if (!booted() || snapshots.empty()) { timelineMessage = "The timeline has no snapshot yet."; return false; }
+    start &= 0xffff; end &= 0xffff;
+    if (end < start) std::swap(start, end);
+    const uint64_t now = emu->instructions;
+    uint64_t lastHit = UINT64_MAX;
+    const bool found = timelineSearch(nullptr, start, end, lastHit);
+    if (!found) { timelineGoTo(now); timelineMessage = "Nothing wrote there in the recorded time."; return false; }
+    timelineGoTo(lastHit);
+    char b[128];
+    std::snprintf(b, sizeof b, "The last write to &%04X-&%04X: the instruction at &%04X", start, end, emu->cpu->pc & 0xffff);
+    timelineMessage = b;
+    return true;
 }
 
 void EmuHost::stepInstruction(bool redraw) {
@@ -1260,6 +1733,7 @@ bool EmuHost::basicProgramEnd(int& end, bool& basic10) const {
 }
 
 bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
+    timelineEdited();
     int end = 0;
     bool basic10 = false;
     if (!basicProgramEnd(end, basic10)) {
@@ -1282,7 +1756,8 @@ bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
     framesRun++;
-    if (typedAt < typed.size() && emu->keyboard) {   // typeText's queue: a key at a time
+    timelineFrameStart();
+    if (typedAt < typed.size() && emu->keyboard && !moviePlay_) {   // typeText's queue: a key at a time
         const char c = typed[typedAt];
         if (typedPhase == 0 && !cpcTypeKey(*emu->keyboard, c, true)) typedPhase = 7;   // no key types it: skipped
         else if (typedPhase == 4) cpcTypeKey(*emu->keyboard, c, false);
@@ -1341,11 +1816,26 @@ void EmuHost::runFrame() {
         double instant = 4000000.0 / elapsedTStates;
         cpcRefreshHz += (instant - cpcRefreshHz) * 0.15;
     }
+    timelineFrameEnd();
+    movieFrameEnd();
     drainAudio();
+}
+
+void EmuHost::setRasterOverlay(bool on) {
+    rasterOverlay = on;
+    if (!emu) return;
+    emu->ioOverlay = on;
+    void (*note)(void*, int, int) = [](void* m, int address, int value) {
+        static_cast<GX4000*>(m)->noteIo(0x6400 + (address - 0x2400), value, RasterLine::IO_PLUS_PALETTE);
+    };
+    emu->asic->onPaletteWrite = on ? note : nullptr;
+    emu->asic->onPaletteWriteContext = emu;
+    if (video) video->drawIoMarks = on;
 }
 
 void EmuHost::render() {
     if (!video || !booted()) return;
+    pictureChanged = true;
     // The beam renderer covers only the classic monitor path; Plus/ASIC keeps the
     // legacy compositor (sprites etc.). beamMode suppresses render() only when the
     // beam is actually driving the frame.
@@ -1420,7 +1910,7 @@ void EmuHost::drainAudio() {
 }
 
 void EmuHost::setKey(SDL_Scancode sc, bool pressed) {
-    if (!emu->keyboard) return;
+    if (!emu->keyboard || liveInputBlocked()) return;
     std::string code = sdlScancodeToBrowserCode(sc);
     if (code.empty()) return;
     emu->keyboard->setKey(code, pressed, "", sdlKeyLocation(sc));

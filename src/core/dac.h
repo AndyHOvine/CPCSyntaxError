@@ -8,6 +8,7 @@ namespace cpcse {
 class CpcDac {
 public:
     std::string mode = "none"; // 'none','digiblaster','amdrum','printer','matrix'
+    bool sounding = false;     // a DAC mode (digiblaster, amdrum): set with mode, by setMode
     int amdrumValue = 0xff;
     double currentSample = 0;
     double filteredSample = 0;

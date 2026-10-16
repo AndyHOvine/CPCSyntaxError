@@ -5,6 +5,7 @@
 #include "raster.h"
 #include "cpr_loader.h"
 #include "debug_symbols.h"
+#include "logic_analyser.h"
 #include <any>
 
 namespace cpcse {
@@ -62,6 +63,7 @@ public:
     std::string model = "CPC";
 
     std::vector<std::shared_ptr<RasterLine>> rasterCapture, rasterFrame, previousRasterFrame;
+    std::vector<std::shared_ptr<RasterLine>> rasterPool;   // records of old frames, to fill again (completeRasterFrame)
     int classicMonitorCharacter = 0;
     // ACCC §27.6.5 (p.288): the ASIC's of CRTC 3 and 4 hand the GATE ARRAY their HSYNC
     // a microsecond late, so R52 increments -- and the interrupt lands -- one usec
@@ -146,6 +148,7 @@ public:
     void updateGunstickSensor(Beam beam, double aimX, double aimY);
     void completeRasterFrame();
     void advanceClassicMonitorCharacter();
+    void advanceClassicMonitorRun(int n);
     void syncClassicMonitorTiming();
     int rasterByteAddress(int ma, int raster);
     int rasterByteAddress(int ma);
@@ -177,6 +180,20 @@ public:
     // Instant tape loading (CPCTapeDrive::instantLoad): the Z80 at the OS ROM's CAS READ
     // (known by its first bytes); casReadTrap does the routine's work, or returns false.
     bool casReadTrap();
+    // The logic analyser (logic_analyser.h): a sample at the end of every character while
+    // it is enabled; a trigger it fires stops the machine as a breakpoint does.
+    LogicAnalyser analyser;
+    void recordAnalyser();
+    // The raster timing overlay (RasterLine::ioMarks): each OUT noted on the line being swept
+    // while ioOverlay is set; nothing otherwise.
+    bool ioOverlay = false;
+    void noteIo(int port, int value, int kind = -1);
+    // THE TIMELINE'S CLOCK (timeline.h): instructions stepped since power-on. An input
+    // logged at `instructions == k` goes in before instruction k on a replay: onInputDue is
+    // called at the start of the step whose number reaches inputDueAt.
+    uint64_t instructions = 0;
+    uint64_t inputDueAt = UINT64_MAX;
+    std::function<void()> onInputDue;
     bool motorStartWaitTrap();
     // Machine time in T-states (4 per usec): every instruction as long as the hardware
     // ran it, i.e. after the CPC's rounding to whole usec. cpu->tStates is the Z80's own

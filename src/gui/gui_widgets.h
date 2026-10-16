@@ -107,6 +107,13 @@ bool checkboxWrapped(const char* label, bool* v);
 void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
                     std::vector<uint32_t>& out);
 
+// THE SOFT SLOT MASK, the look ACE-DL gives a CTM: each pixel keeps its colour whole, under
+// fine dark lines (one column in three stripes) and faint staggered slot bridges, brightened
+// back by the light they take (clipped at full). strength: how dark the lines are (bridges
+// half of it); stripe: the lines' spacing (a line every 3 x stripe pixels); turned: across.
+void softMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
+                    std::vector<uint32_t>& out);
+
 // The beam's spot is round and soft, so a pixel's edges on a tube are not hard: the picture
 // (w x h, RGBA) through a Gaussian blur, across and down. amount 0..1 gives a spread (sigma)
 // of 0 to 1 source pixel: at 1, about one mode 2 pixel across and half a scanline down.

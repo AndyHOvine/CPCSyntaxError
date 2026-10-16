@@ -54,6 +54,12 @@ class UPD765A {
 public:
     // The furthest a drive's head steps (0-based): 3" drives reach 41, one 43 (see above).
     static constexpr int LAST_PHYSICAL_TRACK = 42;
+    // ...that is a 3" drive. A disc with more tracks than a 3" drive can reach was made for an
+    // 80-track drive (3.5", or a Gotek), and is in one: its stop is LAST_80_TRACK. (Clamping
+    // every drive at 42 left Batman Forever's one-disc version, 80 tracks a side, seeking for
+    // ever to track 43.) An empty drive is a 3" drive.
+    static constexpr int LAST_80_TRACK = 82;
+    int lastTrack(int drive) const;
     static constexpr long long REVOLUTION_US = 200000;     // 300 rpm
     static constexpr int BYTE_US = 32;                     // 250 kbit/s MFM
     static constexpr int TRACK_BYTES = (int)(REVOLUTION_US / BYTE_US);   // 6250
@@ -98,6 +104,7 @@ public:
 
     UPD765A() { reset(); }
     void reset();
+    void powerOn();                       // reset, heads on track 0, the clock from 0 (an input movie starts here)
     struct SnapshotState { bool motor = false; std::array<int, 4> tracks{ 0, 0, 0, 0 }; };
     void restoreSnapshotState(const SnapshotState& state);
     std::shared_ptr<Disk> disk() { return drives[0]; }

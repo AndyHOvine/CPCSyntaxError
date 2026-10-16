@@ -16,6 +16,8 @@
 #include <cstdint>
 #include "core/common.h"
 #include "core/cheats.h"
+#include "core/timeline.h"
+#include <deque>
 #include "core/monitor_palette.h"
 
 namespace cpcse {
@@ -313,7 +315,53 @@ public:
     bool loadSnapshot(const std::string& path);
 
     void reset();
+
+    // ---- THE TIMELINE (core/timeline.h): rewind and reverse debugging ----------------
+    // A snapshot of the machine every timelineInterval frames, as far back as the budget
+    // holds, and every input since the oldest one (InputEvent, stamped with the instruction
+    // it came before). Going back is: the snapshot before the point, then the machine run on
+    // to it with the inputs as they came. Running on from there replays the inputs that
+    // came after, until a new one comes: from then the old future is gone. A change of the
+    // machine's setup (model, RAM, chips, cards, media) or a reset starts it again.
+    bool timelineEnabled = true;
+    int timelineInterval = 50;            // frames between snapshots (a second)
+    int timelineBudgetMB = 256;
+    struct TimelineInfo { uint64_t oldest = 0, now = 0, liveEnd = 0; size_t snapshots = 0, inputs = 0, bytes = 0; };
+    TimelineInfo timelineInfo() const;
+    void timelineClear();
+    bool timelineGoTo(uint64_t instruction);   // the machine as it was before that instruction
+    bool timelineStepBack();                   // one instruction back
+    bool timelineFrameBack();                  // to the start of the frame before
+    bool timelineRewind(double seconds);       // that much machine time back (at least one frame)
+    bool timelineRunBack();                    // to the last breakpoint hit before now
+    bool timelineLastWrite(int start, int end);   // to the instruction that last wrote there
+    std::string timelineMessage;               // what the last of these did, or why not
+    // The machine changed by hand (the debugger's registers, memory, PC; the assembler; a
+    // cheat's poke; the BASIC injector): that is not an input a replay could repeat, so
+    // the timeline starts again from here.
+    void timelineEdited();
+
+    // ---- INPUT MOVIES ---------------------------------------------------------------
+    // From power-on (the machine reset, the disc drives' heads and turn from the start, the
+    // tape rewound), every input with the instruction it came before, and a hash of the
+    // machine every second. Played back from the same power-on with the same machine and
+    // media, it is the same run; the hashes say whether it stayed in step, and where not.
+    bool movieRecord(std::string& why);                            // power on, then record
+    bool movieSave(const std::string& path, std::string& why);     // stop recording, to a file
+    bool moviePlay(const std::string& path, std::string& why);     // power on, then play the file
+    void movieStop();                                              // stop recording (nothing saved) or playing
+    bool movieRecording() const { return movieRec; }
+    bool moviePlaying() const { return moviePlay_; }
+    std::string movieStatus;                                       // where it is, in step or not
+    // While a movie plays, the host's own input does not reach the machine.
+    bool liveInputBlocked() const { return moviePlay_ && !applyingInput; }
+    uint64_t timelineLiveEnd() const { return liveEnd; }
     void stepInstruction(bool redraw = true);   // false: leave the picture to the caller (many steps)
+    bool pictureChanged = false;                // render() made a new picture: the front end uploads it
+    // THE RASTER TIMING OVERLAY: each OUT to the CRTC, the GATE ARRAY, the PPI and the Plus
+    // palette marked on the picture where the beam was when it was made. Off: nothing noted.
+    bool rasterOverlay = false;
+    void setRasterOverlay(bool on);
     void runFrame();                         // advance one frame + drain audio
     // TYPING: text typed on the CPC's keyboard by runFrame, a key at a time (held 4 frames,
     // let go for 4); "\n" is Enter. A character no key types is skipped.
@@ -426,6 +474,40 @@ public:
     static Bytes readFile(const std::string& path, bool& ok);
 
 private:
+    // the movie (see movieRecord)
+    bool movieRec = false, moviePlay_ = false;
+    uint64_t movieStartAt = 0, movieEndAt = 0;          // GX4000::instructions
+    long long movieStartCycles = 0;
+    std::vector<InputEvent> movieEvents;                // recording: as they came (absolute .at)
+    struct MovieCheck { uint64_t at; uint64_t hash; };  // a hash of the machine at a frame's end
+    std::vector<MovieCheck> movieChecks;
+    size_t movieCheckAt = 0;
+    int movieFrames = 0, movieChecked = 0;
+    uint64_t movieStartHash = 0;
+    bool movieOutOfStep = false;
+    uint64_t movieStateHash() const;
+    void moviePowerOn();
+    void movieFrameEnd();
+    // the timeline (see timelineGoTo)
+    std::deque<std::unique_ptr<MachineSnapshot>> snapshots;
+    std::vector<InputEvent> inputLog;        // in the order they came (their .at never goes down)
+    std::deque<uint64_t> frameStarts;        // GX4000::instructions at the start of each frame
+    size_t replayAt = 0;                     // the next logged input a replay applies
+    bool applyingInput = false;              // a replayed input is going in: not logged again
+    uint64_t liveEnd = 0;                    // how far the machine had run before it went back
+    size_t snapshotBytes = 0;
+    int framesSinceSnapshot = 0;
+    std::string timelineSetup;               // timelineFingerprint() when it began
+    long timelineEpoch = 0, timelineEpochSeen = -1;
+    std::string timelineFingerprint() const;
+    void timelineFrameStart();
+    void timelineFrameEnd();
+    void timelineLog(InputEvent e);
+    void timelineApplyDue();
+    void timelineApply(const InputEvent& e);
+    void timelineTruncate();                 // a new input: the future after now goes
+    bool timelineSearch(const std::function<void(uint64_t& hit)>& beforeStep, int watchStart, int watchEnd,
+                        uint64_t& lastHit);
     std::string typed;                       // typeText's queue, the character at typedAt next
     size_t typedAt = 0;
     int typedPhase = 0;                      // 0-3 the key is down, 4-7 up
