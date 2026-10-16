@@ -51,7 +51,8 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
 - **The CRT effect** (**Video → CRT effect**) shows the tube's own pattern: the slot mask of
   the colour sets (the CTM's tube is a slot-mask tube), with each red, green or blue phosphor
   slot lit as a whole, and scanlines on the green and grey sets. You can choose the pattern,
-  its strength and size, and turn the mask 90 degrees. A bloom adds a glow.
+  its strength and size, and turn the mask 90 degrees. A bloom adds a glow. A blur softens
+  the edges of the pixels, as the round spot of the beam does.
 - **The Z80** passes ZEXDOC, ZEXALL and all the tests of z80test 1.2a by Patrik Rak. This
   includes the undocumented flags, MEMPTR, SCF/CCF on a Zilog chip and interrupted block
   instructions.
@@ -83,6 +84,14 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
     or onto a **new blank tape**. The firmware format becomes standard turbo blocks (TZX
     &11). Other signals stay as the raw signal. **Save tape as** writes a CDT file. A
     recording on a CDT file goes back into that file.
+  - **Fast loading** (on by default): the blocks that the CPC firmware reads play at a speed
+    that you set, from 1000 to 3500 baud (default 3000). Each tape has its own speed, so each
+    block gets its own factor. A block plays fast only when it is in the firmware's format and
+    the firmware reads it. A block that a custom or protected loader reads plays at its own
+    speed. The list of blocks shows the decision for each block.
+  - **Instant loading** (off by default): when the firmware reads a block, its bytes go into
+    memory at once. There is no wait, and no border stripes or tape sound. Other blocks play
+    as they are. This works with the OS ROMs of the 464, 664, 6128 and the Plus.
   - **Turbo**: while the tape moves, the full CPC runs faster. The speed is up to 20 times, or
     the maximum speed of your computer. All loaders work, protected loaders too.
 - **Cartridges (CPR) and snapshots (SNA)** are available. Each type of media has an **Eject**
@@ -285,7 +294,8 @@ A headless screenshot mode is available for scripts:
 cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type "RUN\"GAME\n"]
           [--cart file.cpr] [--tape file.cdt] [--sna file.sna] [--savesna out.sna]
           [--crtc 0-4] [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
-          [--disk-writeback] [--record-tape out.cdt] [--hhold -79..79] [--vhold -50..50]
+          [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off]
+          [--hhold -79..79] [--vhold -50..50]
           [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--ide <folder>] [--xrom <slot>=<rom file>]
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
           [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
@@ -299,6 +309,8 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
   headless mode and on in the window.
 - `--record-tape` puts a blank tape in the deck and starts to record. At the end, the
   emulator saves the tape in that file.
+- `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
+  the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
   frames), `m` (move the mouse), `c` (click), `d` (double-click), `j` (hold the joystick,
   `j<bits>,<frames>`), `t` (type text), `k` (tap a key) and `s` (save a screenshot). This is

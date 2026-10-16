@@ -143,6 +143,12 @@ public:
     // the relay's start-up delay.
     bool tapeFollowsMotor = true;
     bool tapeRelayDelay = true;
+    // Fast loading (CPCTapeDrive::fastLoad): the blocks only the firmware reads play at
+    // tapeFastBaud; the others (custom and protected loaders) at their own speed.
+    bool tapeFastLoad = true;
+    int tapeFastBaud = 3000;
+    // Instant loading (CPCTapeDrive::instantLoad): the firmware's records straight into memory.
+    bool tapeInstantLoad = false;
 
     // speed / display preferences (read by the shell)
     float speed = 1.0f;                     // 0.25 .. 4.0
@@ -159,6 +165,7 @@ public:
     bool crtEffect = false;      // the tube's pattern + bloom overlay
     float crtScanline = 0.5f;
     float crtBloom = 0.2f;
+    float crtBlur = 0.0f;        // the beam's soft spot (softenRender): 0 sharp .. 1
     // THE TUBE'S PATTERN: "auto" (as the set: a colour tube has a slot mask -- its phosphors
     // are stripes behind slots -- and a green or grey tube shows scanlines), "slot",
     // "scanlines" or "none". crtMask is the mask's strength (0..1), crtMaskSize the width of

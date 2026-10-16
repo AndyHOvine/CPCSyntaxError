@@ -190,6 +190,8 @@ void GuiShell::sectionVideo(bool asMenu) {
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The stripes across the screen and the slots in rows,\nnot the stripes up and down.");
     ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##scan", &host.crtScanline, 0.0f, 1.0f, "scanlines %.2f");
     ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##bloom", &host.crtBloom, 0.0f, 1.0f, "bloom %.2f");
+    ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##blur", &host.crtBlur, 0.0f, 1.0f, "blur %.2f");
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The beam's spot is round and soft: the pixels' edges soften, as on a tube.\n0 = sharp.");
     ImGui::EndDisabled();
 
     if (asMenu) ImGui::Separator(); else sectionHeading("GFX9000 monitor");
@@ -570,11 +572,14 @@ void GuiShell::sectionExpansions(bool asMenu) {
 
 // ============================================================== tape deck
 void GuiShell::sectionTape(bool asMenu) {
-    bool motor = host.tapeFollowsMotor, relay = host.tapeRelayDelay;
+    bool motor = host.tapeFollowsMotor, relay = host.tapeRelayDelay, fast = host.tapeFastLoad, instant = host.tapeInstantLoad;
+    int baud = host.tapeFastBaud;
     bool changed;
     if (asMenu) {
         changed = ImGui::MenuItem("Follow the motor relay", nullptr, &motor);
         changed |= ImGui::MenuItem("Relay start-up delay", nullptr, &relay, motor);
+        changed |= ImGui::MenuItem("Fast loading (firmware blocks)", nullptr, &fast);
+        changed |= ImGui::MenuItem("Instant loading (firmware blocks)", nullptr, &instant);
     } else {
         changed = ImGui::Checkbox("Follow the motor relay", &motor);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The tape only plays while the PPI switches the cassette motor on,\nas on a real CPC.");
@@ -582,8 +587,37 @@ void GuiShell::sectionTape(bool asMenu) {
         changed |= after().checkbox("Relay delay", &relay);
         ImGui::EndDisabled();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The relay and the motor take a moment to come up to speed.");
+        // fast loading: the tape's signal itself faster, block by block
+        changed |= ImGui::Checkbox("Fast loading", &fast);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The blocks that the CPC's own firmware reads play at the speed below.\n"
+                              "The firmware times the bits against the leader, so it reads them.\n"
+                              "A block that a custom or protected loader reads plays at its own speed.\n"
+                              "The block list shows the decision for each block.");
+        ImGui::BeginDisabled(!fast);
+        // the speed as a baud rate, and the firmware's "0" pulse that it gives (in T-states)
+        char shown[64];
+        std::snprintf(shown, sizeof shown, "%%d baud (\"0\" pulse %d T)", (int)std::lround(3500000.0 / (3.0 * std::max(1, baud))));
+        FlowRow row = after();
+        row.place(200.0f);
+        ImGui::SetNextItemWidth(-1);
+        changed |= ImGui::SliderInt("##tapefastbaud", &baud, CPCTapeDrive::FAST_BAUD_MIN, CPCTapeDrive::FAST_BAUD_MAX, shown, ImGuiSliderFlags_AlwaysClamp);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("The speed of the fast blocks. Each tape has its own speed: a block at\n"
+                              "1000 baud plays 3x faster at 3000, a block at 2000 baud 1.5x.\n"
+                              "A block that is already as fast plays as it is.\n"
+                              "Lower it if a tape does not load.");
+        ImGui::EndDisabled();
+        changed |= checkboxWrapped("Instant: the firmware's blocks straight into memory", &instant);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("When the firmware reads a block (CAS READ), its bytes go into memory at once:\n"
+                              "no wait, no border stripes, no tape sound. A block that is not in the\n"
+                              "firmware's format (a custom or protected loader) plays as it is.");
     }
-    if (changed) { host.tapeFollowsMotor = motor; host.tapeRelayDelay = relay; host.applyTapeOptions(); }
+    if (changed) {
+        host.tapeFollowsMotor = motor; host.tapeRelayDelay = relay; host.tapeFastLoad = fast; host.tapeFastBaud = baud; host.tapeInstantLoad = instant;
+        host.applyTapeOptions();
+    }
 }
 
 // ============================================================== the tape deck
@@ -701,8 +735,12 @@ void GuiShell::tapeDeckControls(bool asMenu) {
             while (clip.Step())
                 for (int i = clip.DisplayStart; i < clip.DisplayEnd; i++) {
                     const long long at = i < (int)deck->blockStartCycles.size() ? deck->blockStartCycles[(size_t)i] : 0;
-                    char label[200];
-                    std::snprintf(label, sizeof label, "%s  %s", clock(at / deck->cyclesPerSecond()).c_str(), deck->getBlockDescription(i).c_str());
+                    // fast loading's decision for the block, once it has played
+                    const int8_t fast = i < (int)deck->blockFast.size() ? deck->blockFast[(size_t)i] : (int8_t)CPCTapeDrive::FAST_UNKNOWN;
+                    const char* how = fast == CPCTapeDrive::FAST_ON ? "  [fast]" : fast == CPCTapeDrive::FAST_NORMAL ? "  [normal: own loader]"
+                                    : fast == CPCTapeDrive::FAST_AS_FAST ? "  [already fast]" : fast == CPCTapeDrive::FAST_INSTANT ? "  [instant]" : "";
+                    char label[240];
+                    std::snprintf(label, sizeof label, "%s  %s%s", clock(at / deck->cyclesPerSecond()).c_str(), deck->getBlockDescription(i).c_str(), how);
                     ImGui::PushID(i);
                     if (ImGui::Selectable(label, i == block)) host.tapeSeekBlock(i);
                     if (i == block && ImGui::IsWindowAppearing()) ImGui::SetScrollHereY();

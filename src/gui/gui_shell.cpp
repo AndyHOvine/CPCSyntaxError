@@ -349,8 +349,19 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
             } else {
                 drawGfxMonitor(dl, gx, gy, gw, gh);
             }
-        } else
-        dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+        } else {
+            // CRT effect, blur: the picture softened, for the plain picture, the slot mask and the bloom
+            if (host.crtEffect && host.crtBlur > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
+                if (!blurTexture || blurFrame != host.framesRun || blurAmount != host.crtBlur) {
+                    softenRender(host.video->pixels.data(), host.video->width, host.video->height, host.crtBlur, blurPixels);
+                    blurTexture = uploadTexture(10, blurPixels.data(), host.video->width, host.video->height);
+                    blurFrame = host.framesRun;
+                    blurAmount = host.crtBlur;
+                }
+                tex = (ImTextureID)(intptr_t)blurTexture;
+            }
+            dl->AddImage(tex, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+        }
         // CRT effect: the tube's pattern -- a slot mask on a colour tube, scanlines (dark lines
         // every 2 source rows) on a green or grey one, or as chosen -- and a faint bloom.
         // Cheap, and off unless turned on.
@@ -359,11 +370,12 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
                 // the picture through the slot mask, each phosphor slot lit whole, at the
                 // picture's drawn size (to 2560 x 2048), over the plain picture
                 const int w = std::min(2560, (int)std::lround(drawW)), h = std::min(2048, (int)std::lround(drawH));
-                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned };
+                const bool soft = host.crtBlur > 0.001f && blurPixels.size() == host.video->pixels.size();
+                const MaskKey key { host.framesRun, w, h, host.crtMask, host.crtMaskSize, host.crtMaskTurned, soft ? host.crtBlur : 0.0f };
                 if (!maskTexture || !(key == maskKey)) {
-                    slotMaskRender(host.video->pixels.data(), host.video->width, host.video->height, w, h, host.crtMask,
+                    slotMaskRender(soft ? blurPixels.data() : host.video->pixels.data(), host.video->width, host.video->height, w, h, host.crtMask,
                                    host.crtMaskSize, host.crtMaskTurned, maskPixels);
-                    maskTexture = uploadTexture(4, maskPixels.data(), w, h);
+                    maskTexture = uploadTexture(11, maskPixels.data(), w, h);
                     maskKey = key;
                 }
                 dl->AddImage((ImTextureID)(intptr_t)maskTexture, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));

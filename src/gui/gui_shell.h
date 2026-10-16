@@ -190,10 +190,17 @@ private:
     std::vector<uint32_t> maskPixels;
     // made again only for a new emulated frame, a new size or a new setting
     struct MaskKey {
-        uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false;
-        bool operator==(const MaskKey& o) const { return frame == o.frame && w == o.w && h == o.h && strength == o.strength && stripe == o.stripe && turned == o.turned; }
+        uint64_t frame = ~0ull; int w = 0, h = 0; float strength = -1; int stripe = 0; bool turned = false; float blur = 0;
+        bool operator==(const MaskKey& o) const {
+            return frame == o.frame && w == o.w && h == o.h && strength == o.strength && stripe == o.stripe && turned == o.turned && blur == o.blur;
+        }
     };
     MaskKey maskKey;
+    // the picture softened (CRT effect, blur), once a frame
+    std::vector<uint32_t> blurPixels;
+    unsigned blurTexture = 0;
+    uint64_t blurFrame = ~0ull;
+    float blurAmount = -1;
     unsigned logoTexture = 0;        // the logo (tools/make_logo.py, style A), uploaded once
     void drawLogo();
     long long gfxTextureFields = -1;

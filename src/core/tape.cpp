@@ -144,11 +144,11 @@ void CPCTapeDrive::eject() {
     name = "";
     format = "";
     data.clear();
-    blocks.clear();
+    blocks.clear(); blockFast.clear(); blockZero.clear(); fastTag = 0;
     playing = false;
     currentBlock = 0;
     tapeEnded = false;
-    pulseQueue.clear();
+    pulseQueue.clear(); fastTag = 0;
     pulseQueueIndex = 0;
     pulseCyclesLeft = 0;
     tapeCounter = 0;
@@ -230,7 +230,7 @@ bool CPCTapeDrive::load(const Bytes& input, const std::string& fileName) {
     recording = false; modified = false; blockOpen = false;
     name = fileName;
     format = "";
-    blocks.clear();
+    blocks.clear(); blockFast.clear(); blockZero.clear(); fastTag = 0;
     lastError = "";
     try {
         if (tzx) {
@@ -258,7 +258,7 @@ void CPCTapeDrive::rewind() {
     counterZeroCycles = 0;
     currentBlock = 0;
     tapeEnded = false;
-    pulseQueue.clear();
+    pulseQueue.clear(); fastTag = 0;
     pulseQueueIndex = 0;
     pulseCyclesLeft = 0;
     tapeCounter = 0;
@@ -294,7 +294,62 @@ void CPCTapeDrive::addPulse(double cycles, int level) {
     const double exact = cycles + pulseCarry;
     int c = std::max(1, (int)std::lround(exact));
     pulseCarry = exact - c;
-    PulseEvent e; e.type = PulseEvent::PULSE; e.cycles = c; e.level = level ? 1 : 0; pulseQueue.push_back(e);
+    PulseEvent e; e.type = PulseEvent::PULSE; e.cycles = c; e.level = level ? 1 : 0; e.tag = emitTag; pulseQueue.push_back(e);
+}
+
+// The firmware's record: a sync byte, then 256-byte segments, each followed by its CRC (CRC-16
+// with the polynomial &1021 from &FFFF, stored inverted, high byte first), then a short trailer.
+bool CPCTapeDrive::firmwareRecord(const uint8_t* d, int length) {
+    if (length < 1 + 258) return false;
+    int segments = 0;
+    for (int at = 1; at + 258 <= length; at += 258) {
+        uint32_t crc = 0xffff;
+        for (int i = 0; i < 256; i++) {
+            crc ^= (uint32_t)d[at + i] << 8;
+            for (int b = 0; b < 8; b++) crc = (crc & 0x8000) ? ((crc << 1) ^ 0x1021) & 0xffff : (crc << 1) & 0xffff;
+        }
+        const uint32_t stored = (uint32_t)d[at + 256] << 8 | d[at + 257];
+        if (stored != (crc ^ 0xffff)) return false;
+        segments++;
+    }
+    return segments > 0 && length - 1 - segments * 258 <= 8;   // the trailer: a few bytes
+}
+bool CPCTapeDrive::instantRead(int sync, int length, std::vector<uint8_t>& out) {
+    if (!loaded || recording || !playing || paused || length <= 0) return false;
+    const int first = std::max(0, blockAtPosition());
+    for (int i = first; i < (int)blocks.size() && i < first + 64; i++) {
+        const TapeBlock& b = blocks[(size_t)i];
+        int offset = 0, size = 0;
+        if (b.id == 0x10 && b.start + 4 <= (int)data.size()) { size = get2(data, b.start + 2); offset = b.start + 4; }
+        else if (b.id == 0x11 && b.start + 18 <= (int)data.size()) { size = get3(data, b.start + 15); offset = b.start + 18; }
+        else if (b.id == 0x20 || b.id == 0x21 || b.id == 0x22 || b.id == 0x30 || b.id == 0x31 || b.id == 0x32 || b.id == 0x33 || b.id == 0x35 || b.id == 0x5a)
+            continue;                                           // a pause, a name, a note: no signal to read
+        else return false;                                      // a signal not in the firmware's format
+        if (offset + size > (int)data.size()) return false;
+        const uint8_t* record = data.data() + offset;
+        if (!firmwareRecord(record, size)) return false;
+        if (record[0] != (uint8_t)sync) continue;               // the firmware passes over a record of another sync byte
+        const int segments = (size - 1) / 258;
+        if (segments * 256 < length) return false;              // shorter than asked for: the routine finds that out itself
+        out.clear();
+        for (int at = 0; (int)out.size() < length; at++) {
+            const uint8_t* seg = record + 1 + at * 258;
+            out.insert(out.end(), seg, seg + std::min(256, length - (int)out.size()));
+        }
+        if (blockFast.size() < blocks.size()) blockFast.resize(blocks.size(), FAST_UNKNOWN);
+        blockFast[(size_t)i] = FAST_INSTANT;
+        if (i + 1 < (int)blocks.size()) jumpToBlock(i + 1);
+        else { playedCycles = totalCycles; currentBlock = (int)blocks.size(); tapeEnded = true; pulseQueue.clear(); fastTag = 0; pulseQueueIndex = 0; pulseCyclesLeft = 0; }
+        return true;
+    }
+    return false;
+}
+// A block that may be fast-loaded: its pulses get its tag, and its "0" pulse is kept for its factor.
+void CPCTapeDrive::tagFirmwareBlock(int index, const uint8_t* record, int length, double zero) {
+    if (!fastLoad || !firmwareRecord(record, length)) return;
+    emitTag = index + 1;
+    if ((int)blockZero.size() <= index) blockZero.resize((size_t)index + 1, 0);
+    blockZero[(size_t)index] = zero;
 }
 void CPCTapeDrive::addLevel(int level) { PulseEvent e; e.type = PulseEvent::LEVEL; e.level = level ? 1 : 0; pulseQueue.push_back(e); }
 void CPCTapeDrive::addStop(const char* reason) { PulseEvent e; e.type = PulseEvent::STOP; e.reason = reason; pulseQueue.push_back(e); }
@@ -516,10 +571,12 @@ std::string CPCTapeDrive::decodeBlock(int index) {
             int pause = get2(data, p);
             int dataLength = get2(data, p + 2);
             bool isHeader = dataLength > 0 && (data[p + 4] & 0xff) < 0x80;
+            if (p + 4 + dataLength <= (int)data.size()) tagFirmwareBlock(index, data.data() + p + 4, dataLength, 855);
             emitPilot(2168, isHeader ? headerPilotPulses : dataPilotPulses);
             emitSync(667, 735);
             emitData(p + 4, dataLength, 855, 1710, 8);
             emitPause(pause);
+            emitTag = 0;
             break;
         }
         case 0x11: {
@@ -532,10 +589,12 @@ std::string CPCTapeDrive::decodeBlock(int index) {
             int lastBits = data[p + 12] & 0xff;
             int pause = get2(data, p + 13);
             int dataLength = get3(data, p + 15);
+            if (p + 18 + dataLength <= (int)data.size()) tagFirmwareBlock(index, data.data() + p + 18, dataLength, bit0);
             emitPilot(pilotLen, pilotNum);
             emitSync(sync1, sync2);
             emitData(p + 18, dataLength, bit0, bit1, lastBits);
             emitPause(pause);
+            emitTag = 0;
             break;
         }
         case 0x12: {
@@ -672,6 +731,32 @@ bool CPCTapeDrive::processQueueEvent(const PulseEvent& event) {
     portBBit = currentPulseLevel ? 0x80 : 0x00;
     if (event.type == PulseEvent::PULSE) {
         pulseCyclesLeft = event.cycles;
+        if (event.tag && fastLoad) {
+            if (event.tag != fastTag) { fastTag = event.tag; fastSamples = fastYes = 0; fastOn = false; fastFactor = 1; fastCarry = 0; }
+            if (fastSamples < FAST_DECIDE_PULSES) {
+                // the leader's first pulses as they are, asking who listens
+                fastSamples++;
+                if (firmwareListening && firmwareListening()) fastYes++;
+                if (fastSamples == FAST_DECIDE_PULSES) {
+                    const size_t b = (size_t)(event.tag - 1);
+                    const double zero = b < blockZero.size() ? blockZero[b] : 0;
+                    fastFactor = zero > 0 ? zero / fastZero() : 1;
+                    // under 5% faster is not worth it: the block plays as it is
+                    const int8_t state = fastYes != fastSamples ? FAST_NORMAL : fastFactor > 1.05 ? FAST_ON : FAST_AS_FAST;
+                    fastOn = state == FAST_ON;
+                    if (blockFast.size() < blocks.size()) blockFast.resize(blocks.size(), FAST_UNKNOWN);
+                    if (b < blockFast.size()) blockFast[b] = state;
+                }
+            } else if (fastOn) {
+                const double exact = event.cycles / fastFactor + fastCarry;
+                const int c = std::max(1, (int)std::lround(exact));
+                fastCarry = exact - c;
+                pulseCyclesLeft = c;
+                // the head moves on by the pulse's whole length on the tape: the counter, the
+                // time and the block shown stay on the tape's own timeline
+                playedCycles += event.cycles - c;
+            }
+        }
     }
     return true;
 }
@@ -729,7 +814,7 @@ void CPCTapeDrive::jumpToBlock(int index) {
     if (index < (int)blockStartCycles.size()) playedCycles = blockStartCycles[(size_t)index];
     pulseCarry = 0;
     currentBlock = index;
-    pulseQueue.clear();
+    pulseQueue.clear(); fastTag = 0;
     pulseQueueIndex = 0;
     pulseCyclesLeft = 0;
     currentPulseLevel = initialSignalLevel ? 1 : 0;
@@ -794,13 +879,13 @@ void CPCTapeDrive::buildTimeline() {
         // 65535 could take minutes to measure. Past this the blocks after are not measured
         // (they all start where the measuring stopped).
         if (pulses > 2 * MAX_BLOCK_PULSES) continue;   // 60 million: some eight hours of CPC tape
-        pulseQueue.clear();
+        pulseQueue.clear(); fastTag = 0;
         try { decodeBlock((int)i); } catch (const std::exception&) {}   // a bad block: no length
         for (const PulseEvent& e : pulseQueue) if (e.type == PulseEvent::PULSE) at += e.cycles;
         pulses += (long long)pulseQueue.size();
     }
     totalCycles = at;
-    pulseQueue.clear();
+    pulseQueue.clear(); fastTag = 0;
     pulseQueueIndex = 0;
     loopStack.clear();
     callStack.clear();
@@ -848,7 +933,7 @@ void CPCTapeDrive::fastForward() {
     const int b = blockAtPosition();
     if (b < 0) return;
     if (b + 1 < (int)blocks.size()) seekBlock(b + 1);
-    else { playedCycles = totalCycles; currentBlock = (int)blocks.size(); tapeEnded = true; pulseQueue.clear(); pulseQueueIndex = 0; }
+    else { playedCycles = totalCycles; currentBlock = (int)blocks.size(); tapeEnded = true; pulseQueue.clear(); fastTag = 0; pulseQueueIndex = 0; }
 }
 
 void CPCTapeDrive::rewindBlock() {
@@ -896,7 +981,7 @@ bool CPCTapeDrive::startRecording() {
     lastEdge = -1;
     lastBlockPause = -1;
     blockOpen = false;
-    pulseQueue.clear(); pulseQueueIndex = 0; pulseCyclesLeft = 0;
+    pulseQueue.clear(); fastTag = 0; pulseQueueIndex = 0; pulseCyclesLeft = 0;
     setTapeNoise(0);
     return true;
 }
@@ -1046,14 +1131,14 @@ void CPCTapeDrive::stopRecording() {
     Bytes image(data.begin(), data.begin() + (long)std::min(recordCut, data.size()));
     image.insert(image.end(), recorded.begin(), recorded.end());
     data = image;
-    blocks.clear();
+    blocks.clear(); blockFast.clear(); blockZero.clear(); fastTag = 0;
     parseTzx(data);
     buildTimeline();
     // the head where the recording ended: after the last block written
     playedCycles = totalCycles;
     currentBlock = (int)blocks.size();
     tapeEnded = true;
-    pulseQueue.clear(); pulseQueueIndex = 0; pulseCyclesLeft = 0;
+    pulseQueue.clear(); fastTag = 0; pulseQueueIndex = 0; pulseCyclesLeft = 0;
     recorded.clear();
     modified = true;
 }

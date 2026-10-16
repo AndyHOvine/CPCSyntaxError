@@ -291,6 +291,9 @@ GX4000::GX4000() {
         if (write) advanceHardwareToInstructionOffset(offset & ~3);
     });
     cpu = new Z80(memory, ports);
+    // The tape's fast loading asks who reads a block: the firmware's reader runs in the OS
+    // ROM (&0000-&3FFF, the lower ROM in); a loader of the program's own runs in RAM.
+    tape->firmwareListening = [this]() { return memory->lowerEnabled && (cpu->pc & 0xffff) < 0x4000; };
     multiface->attach(memory, cpu);
     cpu->onLowM1 = [this](int address) { if (multiface->enabled) multiface->opcodeFetch(address); };
     // The GATE ARRAY stretches every M-cycle out to a whole microsecond, so a bus
@@ -1036,7 +1039,60 @@ int GX4000::cpcInstructionCycles(int z80Cycles, bool ioAccessed) {
     return cycles;
 }
 int GX4000::cpcInstructionCycles(int z80Cycles) { return cpcInstructionCycles(z80Cycles, cpuIoAccessed); }
+// CAS READ (&BCA1) in the OS ROMs: entry A = the sync byte, HL = where to, DE = how many
+// bytes; exit carry set when the record was read, the interrupts on (the routine's EI).
+// The 464's is at &2836; the 664's, the 6128's and the Plus's at &29A6 (their jumpblocks
+// LOW JUMP there: &A836 and &A9A6). Each is known by its first bytes: CALL setup; PUSH AF;
+// LD HL,store; JR read.
+bool GX4000::casReadTrap() {
+    static const uint8_t os464[] = { 0xcd, 0x73, 0x28, 0xf5, 0x21, 0xb8, 0x28, 0x18, 0x19 };
+    static const uint8_t os6128[] = { 0xcd, 0xe3, 0x29, 0xf5, 0x21, 0x28, 0x2a, 0x18, 0x19 };
+    const int pc = cpu->pc & 0xffff;
+    const uint8_t* sign = pc == 0x2836 ? os464 : pc == 0x29a6 ? os6128 : nullptr;
+    if (!sign || !memory->lowerEnabled || cpu->halted) return false;
+    for (int i = 0; i < 9; i++) if ((memory->read(pc + i) & 0xff) != sign[i]) return false;
+    const int length = cpu->d << 8 | cpu->e, to = cpu->h << 8 | cpu->l;
+    std::vector<uint8_t> bytes;
+    if (!tape->instantRead(cpu->a, length, bytes)) return false;
+    static const bool trace = std::getenv("CPCSE_TRACE_INSTANT") != nullptr;
+    if (trace) std::fprintf(stderr, "INSTANT at %.2f s: sync %02X, %d bytes to &%04X, return &%04X, motor %d\n", machineCycles / 4000000.0,
+                            cpu->a & 0xff, length, to, (memory->read(cpu->sp) & 0xff) | (memory->read((cpu->sp + 1) & 0xffff) & 0xff) << 8, tape->motorOn ? 1 : 0);
+    for (size_t i = 0; i < bytes.size(); i++) memory->write((to + (int)i) & 0xffff, bytes[i]);
+    // as the routine leaves it: carry set (read), IX past the bytes, the interrupts on; then its RET
+    cpu->f |= 0x01;
+    cpu->ix = (to + length) & 0xffff;
+    cpu->iff1 = cpu->iff2 = true;
+    cpu->pc = (memory->read(cpu->sp) & 0xff) | (memory->read((cpu->sp + 1) & 0xffff) & 0xff) << 8;
+    cpu->sp = (cpu->sp + 2) & 0xffff;
+    return true;
+}
+// The firmware stops the motor after each record it reads and starts it again for the next;
+// a start from off waits 2 seconds (BC = 200 times 10 ms, ESC tested) for the tape to come up
+// to speed. With instant loading no tape has to: that wait, and only when the motor routine
+// calls it (464: &2A72 from &2A6B; 664/6128/Plus: &2BE2 from &2BDB) with PLAY down and no
+// recording, ends at once, as its end leaves it: A = 0, BC = 0, Z and carry set.
+bool GX4000::motorStartWaitTrap() {
+    static const uint8_t os464[] = { 0xc5, 0xe5, 0xcd, 0x89, 0x2a };
+    static const uint8_t os6128[] = { 0xc5, 0xe5, 0xcd, 0xf9, 0x2b };
+    const int pc = cpu->pc & 0xffff;
+    const uint8_t* sign = pc == 0x2a72 ? os464 : pc == 0x2be2 ? os6128 : nullptr;
+    if (!sign || !memory->lowerEnabled || cpu->halted || !tape->playing || tape->recording || !tape->loaded) return false;
+    for (int i = 0; i < 5; i++) if ((memory->read(pc + i) & 0xff) != sign[i]) return false;
+    const int back = (memory->read(cpu->sp) & 0xff) | (memory->read((cpu->sp + 1) & 0xffff) & 0xff) << 8;
+    if (back != (pc == 0x2a72 ? 0x2a6e : 0x2bde)) return false;
+    cpu->a = 0; cpu->b = 0; cpu->c = 0;
+    cpu->f = (cpu->f & ~0xc5) | 0x41;            // Z and carry set, S and P/V clear (OR C of 0)
+    cpu->pc = back;
+    cpu->sp = (cpu->sp + 2) & 0xffff;
+    return true;
+}
+
 int GX4000::stepInstruction() {
+    // instant tape loading: the firmware's CAS READ done at once, then on at its caller
+    if (tape->instantLoad) {
+        if (cpu->pc == 0x2836 || cpu->pc == 0x29a6) casReadTrap();
+        else if (cpu->pc == 0x2a72 || cpu->pc == 0x2be2) motorStartWaitTrap();
+    }
     cpuIoAccessed = false;
     timingInstructionActive = true;
     hardwareCyclesAdvanced = 0;

@@ -798,6 +798,9 @@ void EmuHost::applyTapeOptions() {
     if (!emu || !emu->tape) return;
     emu->tape->requireMotor = tapeFollowsMotor;
     emu->tape->tapeRelayDelay = tapeRelayDelay;
+    emu->tape->fastLoad = tapeFastLoad;
+    emu->tape->instantLoad = tapeInstantLoad;
+    emu->tape->fastLoadBaud = std::clamp(tapeFastBaud, (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
 }
 
 int EmuHost::analogue(int channel) const {

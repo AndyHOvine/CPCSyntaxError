@@ -52,6 +52,7 @@
 #include "core/keyboard.h"
 #include "keymap.h"
 #include "core/emulator.h"
+#include "core/tape.h"
 #include "core/video.h"
 #include "core/z80.h"
 #include "core/memory.h"
@@ -231,7 +232,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -243,6 +244,7 @@ int main(int argc, char** argv) {
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
+            else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
             else if (a == "--type" && i + 1 < argc) typeStr = argv[++i];   // typed after boot (\\n = Enter)
             else if (a == "--keys" && i + 1 < argc) keysStr = argv[++i];   // tap after F1 loads: e.g. "Space" launches PD ball
             else if (a == "--f1at" && i + 1 < argc) f1at = std::atoi(argv[++i]);
@@ -295,6 +297,10 @@ int main(int argc, char** argv) {
             if (sf3) host.symbifaceModule = "sf3";
             if (multiface) host.multifaceEnabled = true;
             host.diskWriteBack = diskWriteBack;
+            if (tapeFast == "off") host.tapeFastLoad = false;
+            else if (tapeFast == "instant") host.tapeInstantLoad = true;
+            else if (!tapeFast.empty())
+                host.tapeFastBaud = std::clamp(std::atoi(tapeFast.c_str()), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
             if (!serialLine.empty()) {
                 const size_t colon = serialLine.find(':');
                 host.serialKind = serialLine.substr(0, colon);
@@ -565,6 +571,18 @@ int main(int argc, char** argv) {
             host.render();
             if (host.emu && host.emu->crtc) { auto* c = host.emu->crtc; std::printf("[regs] type=%d R0=%d R1=%d R2=%d R3=%d R4=%d R5=%d R6=%d R7=%d R8=%d R9=%d R12=%d R13=%d\n",
                 c->type, c->registers[0],c->registers[1],c->registers[2],c->registers[3],c->registers[4],c->registers[5],c->registers[6],c->registers[7],c->registers[8],c->registers[9],c->registers[12],c->registers[13]); }
+            // fast loading's decision for each block that played
+            if (const CPCTapeDrive* deck = host.tapeDeck(); deck && !tapePath.empty()) {
+                std::string decided;
+                for (size_t b = 0; b < deck->blockFast.size(); b++) {
+                    const int8_t v = deck->blockFast[b];
+                    if (v == CPCTapeDrive::FAST_UNKNOWN) continue;
+                    decided += " [" + std::to_string(b) + "]" + (v == CPCTapeDrive::FAST_ON ? "fast" : v == CPCTapeDrive::FAST_NORMAL ? "normal"
+                                                                 : v == CPCTapeDrive::FAST_INSTANT ? "instant" : "as-fast");
+                }
+                std::printf("[tape] fast loading %s%s, head at block %d of %zu;%s\n", host.tapeFastLoad ? (std::to_string(host.tapeFastBaud) + " baud").c_str() : "off",
+                            host.tapeInstantLoad ? ", instant" : "", deck->blockAtPosition(), deck->blocks.size(), decided.empty() ? " no block decided" : decided.c_str());
+            }
             bool ok = host.saveScreenshotBmp(shot);
             std::printf("[shot] model=%s crtc=%d frames=%d beam=%d -> %s (%s)\n",
                 host.currentModel >= 0 ? host.models[host.currentModel].label.c_str() : "?",
@@ -689,6 +707,7 @@ int main(int argc, char** argv) {
     host.crtEffect      = geti("crt", 0) != 0;
     host.crtScanline    = level("crtscanline", 0.5, 0.0, 1.0);
     host.crtBloom       = level("crtbloom", 0.2, 0.0, 1.0);
+    host.crtBlur        = level("crtblur", 0.0, 0.0, 1.0);
     host.crtPattern     = gets("crtpattern", "auto");
     if (host.crtPattern != "slot" && host.crtPattern != "scanlines" && host.crtPattern != "none") host.crtPattern = "auto";
     host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
@@ -718,6 +737,9 @@ int main(int argc, char** argv) {
     host.tapeFollowsMotor = geti("tapemotor", 1) != 0;
     host.diskWriteBack  = geti("diskwriteback", 1) != 0;   // a program's disc writes saved into its .dsk
     host.tapeRelayDelay = geti("taperelay", 1) != 0;
+    host.tapeFastLoad   = geti("tapefastload", 1) != 0;
+    host.tapeInstantLoad = geti("tapeinstant", 0) != 0;
+    host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
     host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
     host.beamRenderer   = geti("beam", 0) != 0;
 
@@ -992,6 +1014,7 @@ int main(int argc, char** argv) {
             f << "crt=" << (host.crtEffect ? 1 : 0) << "\n";
             f << "crtscanline=" << host.crtScanline << "\n";
             f << "crtbloom=" << host.crtBloom << "\n";
+            f << "crtblur=" << host.crtBlur << "\n";
             f << "crtpattern=" << host.crtPattern << "\n";
             f << "crtmask=" << host.crtMask << "\n";
             f << "crtmasksize=" << host.crtMaskSize << "\n";
@@ -1020,6 +1043,9 @@ int main(int argc, char** argv) {
             f << "tapemotor=" << (host.tapeFollowsMotor ? 1 : 0) << "\n";
             f << "diskwriteback=" << (host.diskWriteBack ? 1 : 0) << "\n";
             f << "taperelay=" << (host.tapeRelayDelay ? 1 : 0) << "\n";
+            f << "tapefastload=" << (host.tapeFastLoad ? 1 : 0) << "\n";
+            f << "tapeinstant=" << (host.tapeInstantLoad ? 1 : 0) << "\n";
+            f << "tapefastbaud=" << host.tapeFastBaud << "\n";
             f << "tapeturbo=" << host.tapeTurbo << "\n";
             f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
             shell.saveSettings(f);

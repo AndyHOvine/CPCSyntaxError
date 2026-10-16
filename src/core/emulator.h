@@ -174,6 +174,10 @@ public:
     int cpcInstructionCycles(int z80Cycles, bool ioAccessed);
     int cpcInstructionCycles(int z80Cycles);
     int stepInstruction();
+    // Instant tape loading (CPCTapeDrive::instantLoad): the Z80 at the OS ROM's CAS READ
+    // (known by its first bytes); casReadTrap does the routine's work, or returns false.
+    bool casReadTrap();
+    bool motorStartWaitTrap();
     // Machine time in T-states (4 per usec): every instruction as long as the hardware
     // ran it, i.e. after the CPC's rounding to whole usec. cpu->tStates is the Z80's own
     // count and runs ~14% short of this -- it is not a clock for anything outside the CPU.

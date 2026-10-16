@@ -107,6 +107,11 @@ bool checkboxWrapped(const char* label, bool* v);
 void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
                     std::vector<uint32_t>& out);
 
+// The beam's spot is round and soft, so a pixel's edges on a tube are not hard: the picture
+// (w x h, RGBA) through a Gaussian blur, across and down. amount 0..1 gives a spread (sigma)
+// of 0 to 1 source pixel: at 1, about one mode 2 pixel across and half a scanline down.
+void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<uint32_t>& out);
+
 // Writes a file whole or not at all: to a temporary file beside it, then renamed over it,
 // so a failed write (a full disc) leaves the old file as it was instead of cut short.
 // false (and `why`) when it could not.

@@ -16,6 +16,7 @@ struct PulseEvent {
     int cycles = 0;
     int level = 0;
     const char* reason = "";   // a literal: a long recording queues millions of these
+    int tag = 0;               // block index + 1 when the block may be fast-loaded (CPCTapeDrive::fastLoad)
 };
 
 struct LoopFrame { int start; int remaining; };
@@ -38,6 +39,43 @@ public:
     std::string stopTapeMode = "spectrum";
     bool tapeRelayDelay = true;
     std::string machineModel = "cpc";
+
+    // FAST LOADING: the tape's signal itself faster, for the blocks only the firmware reads.
+    // The firmware's reader (CAS READ) times the bits against the leader it has just heard, so
+    // it reads a faster block; a custom or protected loader counts fixed times and does not.
+    // A block is played at fastLoadBaud when (1) it is in the firmware's own format: a sync
+    // byte, then 256-byte segments each with its CRC (firmwareRecord); and (2) the firmware's
+    // reader is the one listening: for the first FAST_DECIDE_PULSES pulses of its leader,
+    // played as they are, firmwareListening() said yes every time (the machine answers: the
+    // Z80 is in the OS's ROM). Else the block plays at its own speed.
+    // Each tape has its own speed, so the setting is a speed, not a factor: the firmware's
+    // "0" bit is two pulses of one length, its "1" two of double length, so a baud rate is
+    // 3500000 / (3 x the "0" pulse) in TZX T-states. Each block's own factor is its "0" pulse
+    // over fastZero(); a block that is already as fast plays as it is.
+    bool fastLoad = false;
+    int fastLoadBaud = 3000;
+    // measured (tape_check, CPCSE_FASTLOAD_LIMIT): the 464 and the 6128 read up to a "0" pulse
+    // of 330 T (3535 baud) and fail at 320 T; the default, 3000 baud, is 389 T
+    static constexpr int FAST_BAUD_MIN = 1000, FAST_BAUD_MAX = 3500;
+    double fastZero() const { return 3500000.0 / (3.0 * std::max(1, fastLoadBaud)); }
+    std::function<bool()> firmwareListening;
+    static constexpr int FAST_DECIDE_PULSES = 64;
+    static bool firmwareRecord(const uint8_t* data, int length);
+    enum : int8_t { FAST_UNKNOWN = -1, FAST_NORMAL = 0, FAST_ON = 1, FAST_AS_FAST = 2, FAST_INSTANT = 3 };
+    // INSTANT LOADING: the firmware's CAS READ is not run; its record comes off the tape at
+    // once (GX4000::stepInstruction traps the routine). instantRead: the next record under
+    // the head with this sync byte, its first `length` bytes into `out`, the head past it.
+    // false (nothing changed) when PLAY is not down, or a block before it is not in the
+    // firmware's format (a loader of its own reads that one; the routine runs as it is).
+    bool instantLoad = false;
+    bool instantRead(int sync, int length, std::vector<uint8_t>& out);
+    std::vector<int8_t> blockFast;   // per block: FAST_UNKNOWN not yet played (or not the firmware's format), FAST_NORMAL another loader listened, FAST_ON fast, FAST_AS_FAST firmware but already at the speed
+    std::vector<double> blockZero;   // per block: the "0" pulse in TZX T-states (for firmware records)
+    int fastTag = 0, fastSamples = 0, fastYes = 0;
+    bool fastOn = false;
+    double fastFactor = 1, fastCarry = 0;
+    int emitTag = 0;                 // the tag decodeBlock gives the pulses it queues
+    void tagFirmwareBlock(int index, const uint8_t* record, int length, double zero);
 
     bool loaded = false;
     std::string name, format;

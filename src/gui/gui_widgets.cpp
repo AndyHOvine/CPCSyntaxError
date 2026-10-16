@@ -163,6 +163,56 @@ void ledGrid(std::initializer_list<LedItem> items, float column) {
     }
 }
 
+void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<uint32_t>& out) {
+    w = std::max(1, w); h = std::max(1, h);
+    const size_t n = (size_t)w * (size_t)h;
+    out.resize(n);
+    const double sigma = std::clamp((double)amount, 0.0, 1.0);
+    if (sigma < 0.05) { std::copy(src, src + n, out.begin()); return; }
+    // the kernel, out to 3 sigma, in 1/256ths that add up to 256 exactly
+    const int r = std::max(1, (int)std::ceil(3.0 * sigma));
+    std::vector<uint32_t> k((size_t)(2 * r + 1));
+    double sum = 0;
+    for (int i = -r; i <= r; i++) sum += std::exp(-(double)(i * i) / (2.0 * sigma * sigma));
+    int total = 0;
+    for (int i = -r; i <= r; i++) {
+        k[(size_t)(i + r)] = (uint32_t)std::lround(256.0 * std::exp(-(double)(i * i) / (2.0 * sigma * sigma)) / sum);
+        total += (int)k[(size_t)(i + r)];
+    }
+    k[(size_t)r] = (uint32_t)((int)k[(size_t)r] + 256 - total);
+    // Red and blue in one word (bits 0-15 and 16-31), green in another (bits 8-23): a channel
+    // times weights that add up to 256 is at most 65280, so the fields never meet.
+    std::vector<uint32_t> rb((size_t)w), g((size_t)w), pad((size_t)(w + 2 * r));
+    auto put = [&](uint32_t* to) {
+        for (int x = 0; x < w; x++)
+            to[x] = 0xff000000u | ((rb[(size_t)x] + 0x00800080u) >> 8 & 0x00ff00ffu) | ((g[(size_t)x] + 0x00008000u) >> 8 & 0x0000ff00u);
+    };
+    // across: each row with its edge pixels repeated r times each side
+    std::vector<uint32_t> across(n);
+    for (int y = 0; y < h; y++) {
+        const uint32_t* row = src + (size_t)y * (size_t)w;
+        for (int x = 0; x < r; x++) { pad[(size_t)x] = row[0]; pad[(size_t)(w + r + x)] = row[w - 1]; }
+        std::copy(row, row + w, pad.begin() + r);
+        std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
+        for (int i = 0; i <= 2 * r; i++) {
+            const uint32_t kk = k[(size_t)i];
+            const uint32_t* p = pad.data() + i;
+            for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+        }
+        put(across.data() + (size_t)y * (size_t)w);
+    }
+    // down: the rows above and below (the edge rows repeated)
+    for (int y = 0; y < h; y++) {
+        std::fill(rb.begin(), rb.end(), 0u); std::fill(g.begin(), g.end(), 0u);
+        for (int i = -r; i <= r; i++) {
+            const uint32_t kk = k[(size_t)(i + r)];
+            const uint32_t* p = across.data() + (size_t)std::clamp(y + i, 0, h - 1) * (size_t)w;
+            for (int x = 0; x < w; x++) { rb[(size_t)x] += (p[x] & 0x00ff00ffu) * kk; g[(size_t)x] += (p[x] & 0x0000ff00u) * kk; }
+        }
+        put(out.data() + (size_t)y * (size_t)w);
+    }
+}
+
 void slotMaskRender(const uint32_t* src, int sw, int sh, int w, int h, float strength, int stripe, bool turned,
                     std::vector<uint32_t>& out) {
     w = std::max(1, w); h = std::max(1, h);
