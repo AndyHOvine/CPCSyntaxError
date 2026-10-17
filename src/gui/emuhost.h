@@ -17,8 +17,10 @@
 #include "core/common.h"
 #include "core/cheats.h"
 #include "core/timeline.h"
+#include "joypads.h"
 #include <deque>
 #include "core/monitor_palette.h"
+#include "core/media_recorder.h"
 
 namespace cpcse {
 
@@ -97,6 +99,13 @@ public:
     // input / expansion options
     bool joystickEnabled = true;
     std::string keyboardRegion = "uk";      // uk / fr / es
+    // "cpc": each host key is the CPC key in its place (the CPC layout); "pc": a key that
+    // types a character presses the CPC key that types it on this CPC keyboard (keyboardRegion)
+    std::string keyboardMapping = "cpc";
+    void setKeyChar(SDL_Scancode sc, const std::string& text);   // the PC layout: the key that typed `text`
+    // the host's joysticks and joypads (joypads.h), polled into the CPC's every UI frame
+    JoypadManager pads;
+    void pollPads();
     // THE PRINTER PORT holds one device at a time: none / digiblaster / amdrum (sound DACs)
     // / printer (a text printer) / matrix (an Epson-style dot-matrix printer, page image).
     std::string dacType = "none";
@@ -314,6 +323,44 @@ public:
     bool saveSnapshot(const std::string& path);
     bool loadSnapshot(const std::string& path);
 
+    // ---- RECORDING (core/media_recorder.h): every frame's picture and sound to a file ----
+    // "mjpeg" (an AVI most players play), "zmbv" (a lossless AVI) or, by the file's name, a
+    // .wav of the sound alone.
+    std::string recordFormat = "mjpeg";
+    std::string recordDir = "recordings";    // where the save dialog starts (set by main)
+    MediaRecorder recorder;
+    bool startRecording(const std::string& path, std::string& why);
+    void stopRecording();
+    bool recording() const { return recorder.active(); }
+
+    // ---- RECENT FILES: the discs, tapes, cartridges and snapshots loaded, newest first ----
+    std::vector<std::string> recentFiles;
+    static constexpr size_t RECENT_MAX = 12;
+    void noteRecent(const std::string& path);
+    void clearRecent() { recentFiles.clear(); }
+
+    // ---- QUICK SAVE SLOTS ---------------------------------------------------------------
+    // SLOT_COUNT slots for the program in use (the disc, tape, cartridge or snapshot loaded
+    // last; else the model): each one a .sna file and a small picture in
+    // stateDir/<program>/, so they stay from one session to the next. In this session a slot
+    // also holds an exact copy of the machine (timeline.h); a load takes that copy when the
+    // machine and its media are still the same, and the .sna file when not.
+    std::string stateDir = "states";
+    static constexpr int SLOT_COUNT = 9;
+    struct SlotInfo {
+        bool used = false;
+        std::string when;                     // "2026-10-17 14:03"
+        std::vector<uint32_t> thumb;          // 0xAABBGGRR, thumbW x thumbH
+        int thumbW = 0, thumbH = 0;
+        long revision = 0;                    // changes when the picture does
+    };
+    std::string slotProgram() const;          // the folder: a name, no path
+    const SlotInfo& slotInfo(int slot);       // slot 1..SLOT_COUNT
+    bool saveSlot(int slot);
+    bool loadSlot(int slot);
+    bool canUndoLoad() const { return undoLoad != nullptr; }
+    bool undoSlotLoad();                      // the machine as it was before the last load
+
     void reset();
 
     // ---- THE TIMELINE (core/timeline.h): rewind and reverse debugging ----------------
@@ -474,6 +521,24 @@ public:
     static Bytes readFile(const std::string& path, bool& ok);
 
 private:
+    // the quick save slots (see saveSlot)
+    std::string lastProgram;                  // the stem of the media loaded last
+    std::string slotsFor;                     // slotProgram() when `slots` was read
+    std::array<SlotInfo, SLOT_COUNT + 1> slots{};
+    long slotRevision = 0;
+    struct ExactSlot {
+        std::unique_ptr<MachineSnapshot> machine;
+        std::string setup;                    // slotProgram() + timelineFingerprint()
+        std::vector<uint32_t> picture;        // the screen as it was
+    };
+    std::array<ExactSlot, SLOT_COUNT + 1> exactSlots;
+    std::unique_ptr<MachineSnapshot> undoLoad;
+    std::string undoSetup;
+    std::vector<uint32_t> undoPicture;
+    std::string slotFile(int slot, const char* extension) const;
+    void readSlot(int slot);
+    bool applySnaFile(const std::string& path, std::string& why);
+    void restoreExact(const MachineSnapshot& s, const std::vector<uint32_t>& picture);
     // the movie (see movieRecord)
     bool movieRec = false, moviePlay_ = false;
     uint64_t movieStartAt = 0, movieEndAt = 0;          // GX4000::instructions

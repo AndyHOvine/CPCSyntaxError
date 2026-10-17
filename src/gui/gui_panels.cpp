@@ -263,19 +263,126 @@ void GuiShell::lightgunItems(bool asMenu) {
     if (host.lightgunActive()) ImGui::TextDisabled("Aim with the mouse over the Screen; left button fires.");
 }
 
+// A CPC joystick's device: automatic, none, or one of those connected.
+void GuiShell::joystickDeviceItems(int p, bool asMenu) {
+    JoypadManager& pads = host.pads;
+    auto item = [&](const std::string& label, const std::string& value) {
+        const bool on = pads.port[p] == value;
+        if (asMenu ? ImGui::MenuItem(label.c_str(), nullptr, on) : ImGui::Selectable(label.c_str(), on)) pads.port[p] = value;
+    };
+    const int now = pads.deviceFor(p);
+    item(std::string("Automatic") + (pads.port[p] == "auto" && now >= 0 ? " (" + pads.devices[(size_t)now].name + ")" : ""), "auto");
+    item("None", "none");
+    for (size_t i = 0; i < pads.devices.size(); i++) {
+        ImGui::PushID((int)i);
+        item(pads.devices[i].name, pads.devices[i].guid);
+        ImGui::PopID();
+    }
+    if (pads.devices.empty()) ImGui::TextDisabled("(no joystick or joypad connected)");
+}
+
+// Both CPC joysticks: the device of each, and its map, line by line, with press-to-assign.
+void GuiShell::joystickSettings() {
+    JoypadManager& pads = host.pads;
+    for (int p = 0; p < 2; p++) {
+        ImGui::PushID(p);
+        const int d = pads.deviceFor(p);
+        char title[32]; std::snprintf(title, sizeof title, "CPC joystick %d", p + 1);
+        ImGui::TextUnformatted(title);
+        if (p == 1) { ImGui::SameLine(); ImGui::TextDisabled("(the GX4000's second pad; on a CPC, a joystick on the first one's port)"); }
+        fitNextItemWidth(320.0f, "##dev");
+        const std::string shown = pads.port[p] == "auto" ? (d >= 0 ? "Automatic: " + pads.devices[(size_t)d].name : "Automatic (none connected)")
+                                : pads.port[p] == "none" ? "None" : d >= 0 ? pads.devices[(size_t)d].name : "(not connected)";
+        if (ImGui::BeginCombo("##dev", shown.c_str())) { joystickDeviceItems(p, false); ImGui::EndCombo(); }
+        // a Plus: the stick as a digital joystick, or on the analogue port
+        if (plusMachine(host)) {
+            bool digital = !pads.analogue[p];
+            if (ImGui::RadioButton("Digital", digital)) pads.analogue[p] = false;
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The directions on the joystick port, as on every CPC");
+            ImGui::SameLine();
+            if (ImGui::RadioButton("Analogue (Plus)", !digital)) pads.analogue[p] = true;
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("The stick on the Plus analogue port (ADC %d and %d: X and Y, 0 to 63);\n"
+                                  "the fire buttons stay on the joystick port", p * 2, p * 2 + 1);
+            if (pads.analogue[p]) { ImGui::SameLine(); ImGui::TextDisabled("X %d  Y %d", host.analogue(p * 2), host.analogue(p * 2 + 1)); }
+        }
+        if (d >= 0) {
+            PadDevice& dev = pads.devices[(size_t)d];
+            PadMap& map = pads.mapFor(dev);
+            const int held = pads.lines(p);
+            if (ImGui::BeginTable("##map", 3, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                for (int l = 0; l < PAD_LINES; l++) {
+                    ImGui::PushID(l);
+                    ImGui::TableNextRow();
+                    ImGui::TableNextColumn();
+                    led((held >> l & 1) != 0, padLineName(l));
+                    ImGui::TableNextColumn();
+                    std::string list;
+                    for (const PadBinding& b : map.line[l]) list += (list.empty() ? "" : ", ") + b.text();
+                    const bool capturing = pads.capturePort == p && pads.captureLine == l;
+                    if (capturing) ImGui::TextColored(kAccent, "Press a button or move a stick...");
+                    else { ImGui::PushTextWrapPos(0.0f); ImGui::TextDisabled("%s", list.empty() ? "(nothing)" : list.c_str()); ImGui::PopTextWrapPos(); }
+                    ImGui::TableNextColumn();
+                    if (capturing) { if (ImGui::SmallButton("Stop")) pads.capturePort = -1; }
+                    else {
+                        if (ImGui::SmallButton("Set")) pads.captureStart(p, l, false);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("This line: the next button, stick or hat you move, in place of these");
+                        if (after().smallButton("Add")) pads.captureStart(p, l, true);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("This line: the next button, stick or hat you move, as well");
+                        if (after().smallButton("Clear")) map.line[l].clear();
+                    }
+                    ImGui::PopID();
+                }
+                ImGui::EndTable();
+            }
+            if (ImGui::SmallButton("Defaults")) map = pads.defaultMap(dev);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip(dev.controller ? "Its d-pad and left stick, A for fire 1 and B for fire 2" : "Hat 0, axes 0 and 1, buttons 0 and 1");
+            after().textDisabled(dev.controller ? "a known joypad" : "a joystick (its own layout)");
+        }
+        ImGui::PopID();
+        if (p == 0) ImGui::Spacing();
+    }
+}
+
 void GuiShell::sectionInput(bool asMenu) {
     static const Choice regions[] = { { "UK", "uk", nullptr }, { "French", "fr", nullptr }, { "Spanish", "es", nullptr } };
     auto pickRegion = [this](const char* v) { host.setKeyboardRegion(v); };
+    static const Choice mappings[] = {
+        { "CPC layout", "cpc", "Each key is the CPC key in its place on the keyboard (as on a real CPC)" },
+        { "PC layout", "pc", "A key types what it says on your keyboard: the CPC key that types that\n"
+                             "character is pressed, with or without SHIFT. Keys that type nothing\n"
+                             "(arrows, Enter, Ctrl, the function keys) stay in their place." } };
+    auto pickMapping = [this](const char* v) { host.keyboardMapping = v; };
     if (asMenu) {
-        if (ImGui::BeginMenu("Keyboard layout")) { choiceRow(true, regions, host.keyboardRegion, pickRegion); ImGui::EndMenu(); }
+        if (ImGui::BeginMenu("CPC keyboard")) { choiceRow(true, regions, host.keyboardRegion, pickRegion); ImGui::EndMenu(); }
+        if (ImGui::BeginMenu("Keys")) { choiceRow(true, mappings, host.keyboardMapping, pickMapping); ImGui::EndMenu(); }
     } else {
-        ImGui::TextDisabled("Keyboard");
+        ImGui::TextDisabled("CPC keyboard");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The CPC's own keyboard: it should match its ROM (a French CPC has French keys)");
         choiceRow(false, regions, host.keyboardRegion, pickRegion);
+        ImGui::TextDisabled("Keys");
+        choiceRow(false, mappings, host.keyboardMapping, pickMapping);
     }
 
-    if (asMenu) ImGui::Separator(); else sectionHeading("Joystick & mouse");
+    if (asMenu) {
+        ImGui::Separator();
+        for (int p = 0; p < 2; p++) {
+            char label[24]; std::snprintf(label, sizeof label, "Joystick %d", p + 1);
+            if (ImGui::BeginMenu(label)) { joystickDeviceItems(p, true); ImGui::EndMenu(); }
+        }
+        ImGui::MenuItem("On-screen CPC keyboard", nullptr, &panelOpen("CPC keyboard"));
+        // the buttons are redefined in the settings window (a table, press to assign)
+        if (ImGui::MenuItem("Joysticks and buttons...")) { panelOpen("Input settings") = true; focusWindowNextFrame = "Input settings"; }
+    } else {
+        sectionHeading("Joysticks");
+        joystickSettings();
+    }
+
+    if (asMenu) ImGui::Separator(); else sectionHeading("Keyboard joystick & mouse");
     bool joy = host.joystickEnabled;
-    if (ImGui::Checkbox("Joystick emulation", &joy)) host.setJoystickEnabled(joy);
+    if (ImGui::Checkbox("Arrow keys as joystick", &joy)) host.setJoystickEnabled(joy);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The arrow keys, Ctrl and Alt are CPC joystick 1 (and not keys)");
     float sens = host.mouseSensitivity;
     ImGui::SetNextItemWidth(itemWidth(asMenu));
     if (ImGui::SliderFloat("##sens", &sens, 0.1f, 4.0f, "mouse sensitivity %.2f")) host.setMouseSensitivity(sens);

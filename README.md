@@ -181,11 +181,22 @@ Select the expansions in the **Expansions** menu or in the Settings window.
     interrupt, the Gate Array mode, the CRTC counters C0, C4, C9, MA and R52, the Z80's PC and
     the three AY channels. Zoom, two markers that measure time, and a trigger that stops the
     CPC on a VSYNC, HSYNC or INT edge, a mode change, or a PC. It records only while open.
+  - **Profiler**: press Record, let the program run, then press Stop. It shows the time of
+    each routine (entered by a CALL, an RST or an interrupt), its own and with what it calls,
+    the busiest instructions, and a map of the 64K. The disassembly shows the time of each
+    line as a bar. It records only while open.
   - **Raster timing overlay** (Debug menu): a tick on the picture where each OUT to the
     CRTC, the Gate Array, the PPI or the Plus palette was made, as the beam swept it.
   - **Back in time**: **Back** (Shift+F7) one instruction, **Frame back**, **Run back**
     (Shift+F5) to the last breakpoint hit, and **Last write to** an address: the instruction
     that last wrote it. Running on from there replays the inputs as they came.
+- **Quick save slots**: nine slots for each program. **Ctrl+1** to **Ctrl+9** load a slot,
+  **Ctrl+Shift+1** to **Ctrl+Shift+9** save it. Each slot is a `.sna` file and a picture in
+  `states/<program>/`, so the slots stay from one session to the next. The Snapshot window
+  shows them as pictures. **File → Undo the last load** gives back the machine as it was.
+- **Recording** (File → Record): video and sound into an AVI, as **MJPEG** (most players,
+  Windows' own player too) or **ZMBV** (lossless and small: VLC, ffmpeg and video editors),
+  or the sound only into a WAV. Every frame is recorded, also at unlimited speed.
 - **The timeline** (Machine window, on by default): a snapshot of the machine every second
   and every input since. **Ctrl+Left** goes a second back (hold it to go on). The snapshots
   are exact: from one, with the same inputs, the machine runs the same, instruction for
@@ -195,6 +206,10 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - **Input movies** (Machine → Movie): record from power-on, then every key, joystick, mouse
   and tape button. Played back with the same machine and media, it is the same run; a check
   every second shows that it stays in step, or where it went out of step.
+- **The graphics finder** (Tools): memory as CPC graphics in mode 0, 1 or 2, or as Plus
+  sprite data, to find sprites, fonts and screens. Set the width and the height until the
+  graphics line up; select a linear layout or the CPC screen layout. Save a tile as a PNG,
+  or copy it as `db` lines.
 - **The DSK editor** (Tools, or Media → Drive → Edit):
   - Make new discs in all the CPC formats: DATA, SYSTEM, IBM, 42 or 80 tracks, ParaDOS,
     ROMDOS, Vortex, Dobbertin, or your own geometry.
@@ -224,6 +239,15 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - At the start, only the screen, the Machine and ROMs windows and the media windows (Discs,
   Tape, Cartridge, Snapshot, as tabs) are open. Open the other windows from the menus. They
   dock with their group.
+- **The on-screen CPC keyboard** (Input menu): the keyboard of the 464, 664, 6128 or Plus,
+  drawn from photographs of the real machines, with UK, French or Spanish legends. A key
+  lights while the CPC sees it pressed. Click a key to press it; right-click to hold it down.
+- **Joysticks and joypads**: select the controller for each CPC joystick, and redefine each
+  button and direction (Input → Joysticks and buttons...). On a Plus or GX4000, a joystick
+  can be digital or analogue (the Plus analogue port).
+- **Keys**: the CPC layout (each key by its position) or the PC layout (each key types its
+  character on the CPC), for a UK, French or Spanish CPC keyboard.
+- **File → Recent files**: the last 12 discs, tapes, cartridges and snapshots.
 - Use **Window → Interface size** to make the interface larger (90% to 200%).
 - The file picker shows all the drives (C:, D: and more on Windows). You can type a folder
   name into it. The Save dialog works the same way. Files with all types of names open,
@@ -299,6 +323,8 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | F7, F8, Shift+F8 | Step into, step over, step out |
 | Shift+F7, Shift+F5 | One instruction back, run back to the last breakpoint hit |
 | Ctrl+Left | A second back (the timeline) |
+| Ctrl+1 to Ctrl+9 | Load quick save slot 1 to 9 |
+| Ctrl+Shift+1 to Ctrl+Shift+9 | Save quick save slot 1 to 9 |
 | F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window) |
 | F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface) |
 
@@ -322,7 +348,7 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
           [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
           [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
-          [--dac digiblaster|amdrum] [--wav out.wav]
+          [--dac digiblaster|amdrum] [--wav out.wav] [--record out.avi|out.wav] [--record-format mjpeg|zmbv]
           [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
@@ -332,6 +358,8 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
 - `--record-tape` puts a blank tape in the deck and starts to record. At the end, the
   emulator saves the tape in that file.
 - `--raster-overlay` draws the raster timing overlay on the picture.
+- `--record` records the whole run: an `.avi` with picture and sound (`--record-format`
+  `mjpeg`, the default, or `zmbv`, lossless), or a `.wav` with the sound only.
 - `--tape-fast` sets the fast loading of the tape: a speed in baud, `instant`, or `off`. At
   the end, the emulator prints the decision for each block.
 - `--mouse` runs a small script after all the other steps. The commands are: `w` (wait
@@ -530,6 +558,9 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
   of LMMV with DIX=1 is approximate.
 
 ## Credits and licence
+
+CPCSyntaxError is by **WacKEDmaN** (author and prompter). The code is written with Claude
+(Anthropic).
 
 CPCSyntaxError has the MIT licence (refer to `LICENSE`). The third-party parts keep their own
 licences. Refer to `THIRD_PARTY_NOTICES.md`. Two licences permit **non-commercial use only**:

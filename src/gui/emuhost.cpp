@@ -40,7 +40,10 @@
 #include "core/asic.h"
 #include "core/tape.h"
 #include "core/csl.h"
+#include "gui_widgets.h"
 #include <algorithm>
+#include <chrono>
+#include <ctime>
 #include <cctype>
 #include <cstdio>
 #include <cstdint>
@@ -824,7 +827,8 @@ int EmuHost::analogue(int channel) const {
     return emu->asic->analogueInput[channel] & 0x3f;
 }
 void EmuHost::setAnalogue(int channel, int value) {
-    if (!emu || !emu->asic || channel < 0 || channel > 7) return;
+    if (!emu || !emu->asic || channel < 0 || channel > 7 || liveInputBlocked()) return;
+    if (!applyingInput) { InputEvent e; e.kind = InputEvent::Analogue; e.a = channel; e.b = value; timelineLog(e); }
     emu->asic->analogueInput[channel] = (uint8_t)std::clamp(value, 0, 63);
 }
 
@@ -908,6 +912,8 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     applySettings();
     applyMonitorSet();
     cartName = std::filesystem::path(path).filename().string();
+    lastProgram = std::filesystem::path(path).stem().string();
+    noteRecent(path);
     loadCheatsBeside(path);
     snapshotName.clear();
     paused = false;
@@ -960,7 +966,8 @@ bool EmuHost::loadDiskFile(const std::string& path, int unit) {
     emu->hasFdc = true;
     diskName[unit] = std::filesystem::path(path).filename().string();
     diskPath[unit] = path;
-    if (unit == 0) loadCheatsBeside(path);
+    if (unit == 0) { loadCheatsBeside(path); lastProgram = std::filesystem::path(path).stem().string(); }
+    noteRecent(path);
     status = "Inserted " + diskName[unit] + " into drive " + std::string(unit == 0 ? "A" : "B");
     return true;
 }
@@ -1002,6 +1009,8 @@ bool EmuHost::loadTapeFile(const std::string& path) {
     } catch (const std::exception& ex) { status = std::string("Not a valid .CDT/.TZX tape: ") + ex.what(); return false; }
     tapeName = name;
     tapePath = path;
+    lastProgram = std::filesystem::path(path).stem().string();
+    noteRecent(path);
     loadCheatsBeside(path);
     status = "Inserted tape " + tapeName + "  (press Play)";
     return true;
@@ -1205,21 +1214,204 @@ bool EmuHost::saveSnapshot(const std::string& path) {
     return true;
 }
 
-bool EmuHost::loadSnapshot(const std::string& path) {
-    timelineEpoch += 1;
+bool EmuHost::applySnaFile(const std::string& path, std::string& why) {
     bool ok = false;
     Bytes data = readFile(path, ok);
-    if (!ok || data.empty()) { status = "Could not read snapshot."; return false; }
+    if (!ok || data.empty()) { why = "Could not read snapshot."; return false; }
     Snapshot snap;
     try { snap = parseSna(data); }
-    catch (const std::exception& ex) { status = std::string("Not a valid .SNA snapshot: ") + ex.what(); return false; }
-    if (snap.ram.empty()) { status = "Not a valid .SNA snapshot."; return false; }
+    catch (const std::exception& ex) { why = std::string("Not a valid .SNA snapshot: ") + ex.what(); return false; }
+    if (snap.ram.empty()) { why = "Not a valid .SNA snapshot."; return false; }
+    timelineEpoch += 1;
     applySna(emu, snap);
     applyAudioRate();
     paused = false;
+    return true;
+}
+
+bool EmuHost::loadSnapshot(const std::string& path) {
+    std::string why;
+    if (!applySnaFile(path, why)) { status = why; return false; }
     snapshotName = std::filesystem::path(path).filename().string();
+    lastProgram = std::filesystem::path(path).stem().string();
     loadCheatsBeside(path);
+    noteRecent(path);
     status = "Loaded snapshot " + snapshotName;
+    return true;
+}
+
+// ============================================================== recent files
+void EmuHost::noteRecent(const std::string& path) {
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    std::string full = fs::absolute(fs::u8path(path), ec).lexically_normal().u8string();
+    if (ec || full.empty()) full = path;
+    auto same = [&](const std::string& other) {
+#ifdef _WIN32
+        if (other.size() != full.size()) return false;
+        for (size_t i = 0; i < full.size(); i++)
+            if (std::tolower((unsigned char)other[i]) != std::tolower((unsigned char)full[i])) return false;
+        return true;
+#else
+        return other == full;
+#endif
+    };
+    recentFiles.erase(std::remove_if(recentFiles.begin(), recentFiles.end(), same), recentFiles.end());
+    recentFiles.insert(recentFiles.begin(), full);
+    if (recentFiles.size() > RECENT_MAX) recentFiles.resize(RECENT_MAX);
+}
+
+// ============================================================== quick save slots
+// A small 32-bit picture file, top-down (what saveScreenshotBmp writes), and back.
+static bool writeBmp32(const std::string& path, const std::vector<uint32_t>& px, int w, int h) {
+    std::ofstream f(std::filesystem::u8path(path), std::ios::binary);
+    if (!f) return false;
+    auto u16 = [&](uint16_t v) { f.put((char)(v & 0xff)); f.put((char)(v >> 8)); };
+    auto u32 = [&](uint32_t v) { for (int i = 0; i < 4; i++) f.put((char)((v >> (8 * i)) & 0xff)); };
+    const uint32_t dataSize = (uint32_t)(w * h * 4);
+    f.put('B'); f.put('M'); u32(54 + dataSize); u16(0); u16(0); u32(54);
+    u32(40); u32((uint32_t)w); u32((uint32_t)(-h)); u16(1); u16(32);
+    u32(0); u32(dataSize); u32(2835); u32(2835); u32(0); u32(0);
+    for (uint32_t p : px) { f.put((char)(p >> 16 & 0xff)); f.put((char)(p >> 8 & 0xff)); f.put((char)(p & 0xff)); f.put((char)0xff); }
+    return (bool)f;
+}
+static bool readBmp32(const std::string& path, std::vector<uint32_t>& px, int& w, int& h) {
+    bool ok = false;
+    const Bytes b = EmuHost::readFile(path, ok);
+    if (!ok || b.size() < 54 || b[0] != 'B' || b[1] != 'M') return false;
+    auto u32 = [&](size_t at) { return (uint32_t)b[at] | (uint32_t)b[at + 1] << 8 | (uint32_t)b[at + 2] << 16 | (uint32_t)b[at + 3] << 24; };
+    const uint32_t offset = u32(10);
+    const int width = (int)u32(18), height = -(int32_t)u32(22);
+    if (width <= 0 || width > 1024 || height <= 0 || height > 1024 || (b[28] | b[29] << 8) != 32) return false;
+    if ((size_t)offset + (size_t)width * height * 4 > b.size()) return false;
+    px.resize((size_t)width * height);
+    for (size_t i = 0; i < px.size(); i++) {
+        const uint8_t* s = &b[offset + i * 4];
+        px[i] = 0xff000000u | (uint32_t)s[0] << 16 | (uint32_t)s[1] << 8 | s[2];
+    }
+    w = width; h = height;
+    return true;
+}
+
+std::string EmuHost::slotProgram() const {
+    std::string name = lastProgram;
+    if (name.empty()) name = currentModel >= 0 ? models[(size_t)currentModel].id : "machine";
+    for (char& c : name)
+        if (c == '/' || c == '\\' || c == ':' || c == '*' || c == '?' || c == '"' || c == '<' || c == '>' || c == '|' || (unsigned char)c < 32) c = '_';
+    while (!name.empty() && (name.back() == '.' || name.back() == ' ')) name.pop_back();
+    return name.empty() ? "machine" : name;
+}
+
+std::string EmuHost::slotFile(int slot, const char* extension) const {
+    return (std::filesystem::u8path(stateDir) / std::filesystem::u8path(slotProgram()) / ("slot" + std::to_string(slot) + extension)).u8string();
+}
+
+void EmuHost::readSlot(int slot) {
+    namespace fs = std::filesystem;
+    SlotInfo& s = slots[(size_t)slot];
+    s = SlotInfo{};
+    s.revision = ++slotRevision;
+    std::error_code ec;
+    const fs::path sna = fs::u8path(slotFile(slot, ".sna"));
+    if (!fs::is_regular_file(sna, ec)) return;
+    s.used = true;
+    const auto written = fs::last_write_time(sna, ec);
+    if (!ec) {
+        // the file clock to the system clock, to print it
+        const auto sys = std::chrono::time_point_cast<std::chrono::system_clock::duration>(written - fs::file_time_type::clock::now() + std::chrono::system_clock::now());
+        const std::time_t t = std::chrono::system_clock::to_time_t(sys);
+        if (const std::tm* tm = std::localtime(&t)) {
+            char b[32];
+            std::strftime(b, sizeof b, "%Y-%m-%d %H:%M", tm);
+            s.when = b;
+        }
+    }
+    readBmp32(slotFile(slot, ".bmp"), s.thumb, s.thumbW, s.thumbH);
+}
+
+const EmuHost::SlotInfo& EmuHost::slotInfo(int slot) {
+    slot = std::clamp(slot, 1, SLOT_COUNT);
+    if (slotsFor != slotProgram()) {
+        slotsFor = slotProgram();
+        for (int i = 1; i <= SLOT_COUNT; i++) readSlot(i);
+    }
+    return slots[(size_t)slot];
+}
+
+bool EmuHost::saveSlot(int slot) {
+    if (slot < 1 || slot > SLOT_COUNT || !booted()) return false;
+    namespace fs = std::filesystem;
+    std::error_code ec;
+    fs::create_directories(fs::u8path(slotFile(slot, ".sna")).parent_path(), ec);
+    const Bytes data = createSna(emu, false);
+    if (!writeFileSafely(slotFile(slot, ".sna"), data.data(), data.size())) {
+        status = "Could not write slot " + std::to_string(slot) + " (" + slotFile(slot, ".sna") + ")";
+        return false;
+    }
+    // its picture, a quarter of the screen each way (each pixel the mean of 16)
+    if (video) {
+        const int w = video->width / 4, h = video->height / 4;
+        std::vector<uint32_t> thumb((size_t)w * h);
+        for (int y = 0; y < h; y++)
+            for (int x = 0; x < w; x++) {
+                unsigned r = 0, g = 0, b = 0;
+                for (int dy = 0; dy < 4; dy++)
+                    for (int dx = 0; dx < 4; dx++) {
+                        const uint32_t p = video->pixels[(size_t)(y * 4 + dy) * video->width + x * 4 + dx];
+                        r += p & 0xff; g += p >> 8 & 0xff; b += p >> 16 & 0xff;
+                    }
+                thumb[(size_t)y * w + x] = 0xff000000u | (b / 16) << 16 | (g / 16) << 8 | r / 16;
+            }
+        writeBmp32(slotFile(slot, ".bmp"), thumb, w, h);
+    }
+    // ...and, for this session, the machine exactly
+    ExactSlot& e = exactSlots[(size_t)slot];
+    e.machine = MachineSnapshot::capture(*emu);
+    e.setup = slotProgram() + "#" + timelineFingerprint();
+    if (video) e.picture = video->pixels;
+    if (slotsFor == slotProgram()) readSlot(slot);
+    status = "Saved slot " + std::to_string(slot) + " (" + slotProgram() + ")";
+    return true;
+}
+
+void EmuHost::restoreExact(const MachineSnapshot& s, const std::vector<uint32_t>& picture) {
+    s.restore(*emu);
+    if (video && picture.size() == video->pixels.size()) { video->pixels = picture; pictureChanged = true; }
+}
+
+bool EmuHost::loadSlot(int slot) {
+    if (slot < 1 || slot > SLOT_COUNT || !booted()) return false;
+    if (!slotInfo(slot).used) { status = "Slot " + std::to_string(slot) + " is empty"; return false; }
+    if (moviePlay_ || movieRec) movieStop();
+    // what it was, for Undo
+    undoLoad = MachineSnapshot::capture(*emu);
+    undoSetup = timelineFingerprint();
+    undoPicture = video ? video->pixels : std::vector<uint32_t>{};
+    const ExactSlot& e = exactSlots[(size_t)slot];
+    const bool exact = e.machine && e.setup == slotProgram() + "#" + timelineFingerprint();
+    if (exact) restoreExact(*e.machine, e.picture);
+    else {
+        std::string why;
+        if (!applySnaFile(slotFile(slot, ".sna"), why)) { undoLoad.reset(); status = "Slot " + std::to_string(slot) + ": " + why; return false; }
+    }
+    timelineEdited();                     // not an input a replay could repeat: it starts again
+    // the keys held when the slot was saved (its shortcut among them) are not held now
+    if (emu->keyboard) emu->keyboard->reset();
+    keyHeld.fill(false);
+    status = "Loaded slot " + std::to_string(slot) + (exact ? "" : " (from its .sna file)");
+    return true;
+}
+
+bool EmuHost::undoSlotLoad() {
+    if (!undoLoad || !booted()) return false;
+    if (undoSetup != timelineFingerprint()) { undoLoad.reset(); status = "The machine or its media changed: nothing to undo"; return false; }
+    restoreExact(*undoLoad, undoPicture);
+    undoLoad.reset();
+    undoPicture.clear();
+    timelineEdited();
+    if (emu->keyboard) emu->keyboard->reset();
+    keyHeld.fill(false);
+    status = "Undid the last load";
     return true;
 }
 
@@ -1367,6 +1559,7 @@ void EmuHost::timelineApply(const InputEvent& e) {
         case InputEvent::MouseScroll: mouseScroll((float)e.x); break;
         case InputEvent::Cheats: if (!cheatList.cheats.empty()) cheatList.apply(emu->memory->ram); break;
         case InputEvent::Reset: reset(); break;
+        case InputEvent::Analogue: setAnalogue(e.a, e.b); break;
         case InputEvent::TapeDeck:
             switch (e.a) {
                 case InputEvent::DECK_PLAY: tapePlay(); break;
@@ -1819,6 +2012,33 @@ void EmuHost::runFrame() {
     timelineFrameEnd();
     movieFrameEnd();
     drainAudio();
+    // recording: every frame's picture, so each one is drawn now
+    if (recorder.active() && video) {
+        render();
+        recorder.addFrame(video->pixels.data(), audioOut.data(), audioOut.size());
+    }
+}
+
+// ============================================================== recording
+bool EmuHost::startRecording(const std::string& path, std::string& why) {
+    if (!booted() || !video) { why = "Nothing to record: no machine."; return false; }
+    std::string ext = std::filesystem::u8path(path).extension().u8string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    const MediaRecorder::Format f = ext == ".wav" ? MediaRecorder::Format::Wav
+                                  : recordFormat == "zmbv" ? MediaRecorder::Format::Zmbv : MediaRecorder::Format::Mjpeg;
+    // one CPC frame: 312 lines of 64 usec
+    if (!recorder.start(path, f, video->width, video->height, sampleRate, 19968.0)) { why = "Could not record: " + recorder.error; return false; }
+    status = "Recording to " + std::filesystem::u8path(path).filename().u8string();
+    return true;
+}
+
+void EmuHost::stopRecording() {
+    if (!recorder.active()) return;
+    recorder.stop();
+    char b[160];
+    std::snprintf(b, sizeof b, "Recorded %.1f s (%.1f MB%s)", recorder.seconds(), recorder.bytesWritten() / (1024.0 * 1024.0),
+                  recorder.filesWritten() > 1 ? (", " + std::to_string(recorder.filesWritten()) + " files").c_str() : "");
+    status = recorder.error.empty() ? b : "Recording stopped: " + recorder.error;
 }
 
 void EmuHost::setRasterOverlay(bool on) {
@@ -1906,6 +2126,31 @@ void EmuHost::drainAudio() {
             audioOut[i] = (int16_t)std::clamp((int)audioOut[i] + m, -32768, 32767);
             audioOut[i + 1] = (int16_t)std::clamp((int)audioOut[i + 1] + m, -32768, 32767);
         }
+    }
+}
+
+void EmuHost::setKeyChar(SDL_Scancode sc, const std::string& text) {
+    if (!emu->keyboard || liveInputBlocked()) return;
+    std::string code = sdlScancodeToBrowserCode(sc);
+    if (code.empty()) return;
+    // the character's CPC key (with or without SHIFT, as it types it), else the key's place
+    emu->keyboard->setKey(code, true, text, sdlKeyLocation(sc));
+    const int idx = (int)sc;
+    if (idx >= 0 && idx < (int)keyHeld.size() && !keyHeld[idx]) { keyHeld[idx] = true; machineSounds.key(true, MachineSounds::Key::Normal); }
+}
+void EmuHost::pollPads() {
+    if (!emu || !emu->keyboard || liveInputBlocked()) return;   // a movie plays its own
+    pads.captureStep();
+    for (int p = 0; p < 2; p++) {
+        int lines = pads.lines(p);
+        // a Plus in analogue mode: the stick to the ADC, only the fire buttons digital
+        int x = 32, y = 32;
+        if (pads.analogue[p] && emu->plusHardware && pads.stick(p, x, y)) {
+            lines &= 0x30;
+            if (analogue(p * 2) != x) setAnalogue(p * 2, x);
+            if (analogue(p * 2 + 1) != y) setAnalogue(p * 2 + 1, y);
+        }
+        for (int bit = 0; bit < PAD_LINES; bit++) emu->keyboard->setJoystick(bit, (lines >> bit & 1) != 0, "gamepad", p);
     }
 }
 

@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <ctime>
 #include <filesystem>
 
 #include "gui_assembler.h"
@@ -16,6 +17,7 @@
 #include "gui_cheats.h"
 #include "gui_logic.h"
 #include "devserver.h"
+#include "version.h"
 
 // DejaVu Sans Mono (Bitstream Vera licence: third_party/dejavu/LICENSE.txt)
 #include "font_dejavu_mono.inc"
@@ -53,6 +55,9 @@ GuiShell::GuiShell(EmuHost& h) : host(h), debugger(h) {
         { "Chips", "win_chips", false, false },
         { "Memory", "win_memory", false, false },
         { "Logic analyser", "win_logic", false, false },
+        { "Profiler", "win_profiler", false, false },
+        { "Graphics finder", "win_gfx_finder", false, false },
+        { "CPC keyboard", "win_cpc_keyboard", false, false },
         { "GFX9000", "win_gfx9000", false, false },
         { "Assembler", "win_asm", false, false },
         { "BASIC", "win_basic", false, false },
@@ -166,6 +171,10 @@ void GuiShell::handleShortcuts() {
     if (io.WantTextInput || !host.booted()) return;
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_R, false)) host.reset();
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_P, false)) { if (host.paused) debugger.run(); else debugger.pause(); }
+    // the quick save slots: Ctrl+1..9 loads, Ctrl+Shift+1..9 saves
+    if (io.KeyCtrl && !io.KeyAlt)
+        for (int s = 1; s <= EmuHost::SLOT_COUNT; s++)
+            if (ImGui::IsKeyPressed((ImGuiKey)(ImGuiKey_1 + s - 1), false)) { if (io.KeyShift) host.saveSlot(s); else host.loadSlot(s); }
     // Ctrl+Left: a second back (held: on going back); the machine runs on from there
     if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_LeftArrow, true) && host.timelineEnabled) {
         host.timelineRewind(1.0);
@@ -229,6 +238,9 @@ void GuiShell::draw(const ShellFrameInfo& info) {
     windowPrinter();
     romPrompt();
     windowGfx9000();
+    windowProfiler();
+    windowGraphicsFinder();
+    windowCpcKeyboard();
     windowCslScripts();
     if (panelOpen("DSK editor")) {
         dskEditor->draw(&panelOpen("DSK editor"));
@@ -277,8 +289,8 @@ void GuiShell::buildDefaultLayout(unsigned id) {
 void GuiShell::placeNewlyOpened(unsigned dockspaceId) {
     struct Group { std::vector<const char*> titles; ImGuiDir dir; float ratio; };
     static const Group groups[] = {
-        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser" }, ImGuiDir_Right, 0.42f },
-        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats",
+        { { "Debugger", "Chips", "Memory", "GFX9000", "Logic analyser", "Profiler" }, ImGuiDir_Right, 0.42f },
+        { { "Assembler", "BASIC", "DSK editor", "CSL scripts", "Printer", "Cheats", "Graphics finder", "CPC keyboard",
             "Video settings", "Audio settings", "Input settings", "Expansions", "External debugging" }, ImGuiDir_Down, 0.42f },
         // the media windows: tabs together, below the Machine window (a layout saved before
         // they were windows of their own has only "Media")
@@ -477,6 +489,15 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
         ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : "RUNNING"));
         if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
         else if (host.symbifaceMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
+        if (host.recording()) {
+            char rec[64];
+            const int s = (int)host.recorder.seconds();
+            std::snprintf(rec, sizeof rec, "  REC %d:%02d %.0f MB", s / 60, s % 60, host.recorder.bytesWritten() / (1024.0 * 1024.0));
+            ImGui::PushStyleColor(ImGuiCol_Text, IM_COL32(255, 70, 60, 255));
+            after().text(rec);
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recording to %s\nFile > Record > Stop recording", host.recorder.path().c_str());
+        }
         if (host.movieRecording()) after().text("  REC MOVIE");
         else if (host.moviePlaying()) after().text("  PLAY MOVIE");
         ImGui::PopStyleColor();
@@ -761,10 +782,17 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("BASIC program (text)...")) { panelOpen("BASIC") = true; basicWindow->requestOpen(); }
         ImGui::EndMenu();
     }
+    recentFilesMenu();
+    ImGui::Separator();
+    if (ImGui::BeginMenu("Quick save", host.booted())) { quickSlots(true, true); ImGui::EndMenu(); }
+    if (ImGui::BeginMenu("Quick load", host.booted())) { quickSlots(true, false); ImGui::EndMenu(); }
+    if (ImGui::MenuItem("Undo the last load", nullptr, false, host.canUndoLoad())) host.undoSlotLoad();
+    ImGui::Separator();
     if (ImGui::MenuItem("Save snapshot...", nullptr, false, host.booted()))
         saver.open("Save snapshot", host.romDir, "snapshot.sna", [this](const std::string& p) { host.saveSnapshot(p); });
     if (ImGui::MenuItem("Save screenshot...", nullptr, false, host.booted()))
         saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
+    recordMenu();
     ImGui::Separator();
     if (ImGui::MenuItem("Run CSL script...")) panelOpen("CSL scripts") = true;
     ImGui::Separator();
@@ -886,6 +914,7 @@ void GuiShell::menuTools() {
     if (!ImGui::BeginMenu("Tools")) return;
     ImGui::MenuItem("DSK editor", nullptr, &panelOpen("DSK editor"));
     ImGui::MenuItem("Cheats (POKE finder)", nullptr, &panelOpen("Cheats"));
+    ImGui::MenuItem("Graphics finder", nullptr, &panelOpen("Graphics finder"));
     ImGui::MenuItem("CSL scripts", nullptr, &panelOpen("CSL scripts"));
     ImGui::MenuItem("Printer output", nullptr, &panelOpen("Printer"));
     ImGui::MenuItem("GFX9000", nullptr, &panelOpen("GFX9000"));
@@ -912,7 +941,7 @@ void GuiShell::menuDebug() {
     }
     if (ImGui::MenuItem("Remove all watchpoints", nullptr, false, !debugger.watchpoints.empty())) debugger.watchpoints.clear();
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "GFX9000", "Assembler", "BASIC" })
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000", "Assembler", "BASIC" })
         ImGui::MenuItem(w, nullptr, &panelOpen(w));
     {
         bool overlay = host.rasterOverlay;
@@ -933,6 +962,7 @@ void GuiShell::menuDebug() {
 void GuiShell::menuWindow() {
     if (!ImGui::BeginMenu("Window")) return;
     ImGui::MenuItem("Screen", nullptr, &panelOpen("Screen"));
+    ImGui::MenuItem("CPC keyboard", nullptr, &panelOpen("CPC keyboard"));
     ImGui::Separator();
     ImGui::MenuItem("Machine", nullptr, &panelOpen("Machine"));
     ImGui::MenuItem("ROMs", nullptr, &panelOpen("ROMs"));
@@ -949,9 +979,9 @@ void GuiShell::menuWindow() {
         ImGui::EndMenu();
     }
     ImGui::Separator();
-    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Debugger", "Chips", "Memory", "Logic analyser", "Profiler", "GFX9000" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
-    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
+    for (const char* w : { "Assembler", "BASIC", "DSK editor", "Cheats", "Graphics finder", "CSL scripts", "Printer" }) ImGui::MenuItem(w, nullptr, &panelOpen(w));
     ImGui::Separator();
     if (ImGui::BeginMenu("Interface size")) {
         for (int pct : { 90, 100, 110, 125, 150, 175, 200 }) {
@@ -974,6 +1004,9 @@ void GuiShell::menuHelp() {
         ImGui::TextUnformatted("F11          fullscreen (or double-click the screen)");
         ImGui::TextUnformatted("Ctrl+R       reset");
         ImGui::TextUnformatted("Ctrl+P       pause / run");
+        ImGui::TextUnformatted("Ctrl+1..9    load quick save slot 1..9");
+        ImGui::TextUnformatted("Ctrl+Shift+1..9  save it");
+        ImGui::TextUnformatted("Ctrl+Left    rewind a second");
         ImGui::Separator();
         ImGui::TextDisabled("in a debugger window, or while paused:");
         ImGui::TextUnformatted("F5           run / pause");
@@ -1015,6 +1048,137 @@ void GuiShell::drawLogo() {
     }
     const float w = std::min(ImGui::GetContentRegionAvail().x, kLogoWidth * 0.5f * uiScale);
     ImGui::Image((ImTextureID)(intptr_t)logoTexture, ImVec2(w, w * kLogoHeight / kLogoWidth));
+}
+
+// ============================================================== quick save slots
+unsigned GuiShell::slotPicture(int slot) {
+    const EmuHost::SlotInfo& s = host.slotInfo(slot);
+    if (s.thumb.empty() || !uploadTexture) return 0;
+    if (slotTextureRevision[slot] != s.revision || !slotTexture[slot]) {
+        slotTexture[slot] = uploadTexture(100 + slot, s.thumb.data(), s.thumbW, s.thumbH);
+        slotTextureRevision[slot] = s.revision;
+    }
+    return slotTexture[slot];
+}
+
+void GuiShell::quickSlots(bool asMenu, bool save) {
+    if (asMenu) {
+        ImGui::TextDisabled("for %s", host.slotProgram().c_str());
+        for (int s = 1; s <= EmuHost::SLOT_COUNT; s++) {
+            const EmuHost::SlotInfo& info = host.slotInfo(s);
+            char label[96], keys[24];
+            std::snprintf(label, sizeof label, "Slot %d   %s", s, info.used ? info.when.c_str() : "(empty)");
+            std::snprintf(keys, sizeof keys, save ? "Ctrl+Shift+%d" : "Ctrl+%d", s);
+            if (ImGui::MenuItem(label, keys, false, save || info.used)) { if (save) host.saveSlot(s); else host.loadSlot(s); }
+            if (info.used && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) {
+                if (const unsigned tex = slotPicture(s)) {
+                    ImGui::BeginTooltip();
+                    ImGui::Image((ImTextureID)(intptr_t)tex, ImVec2((float)info.thumbW, (float)info.thumbH));
+                    ImGui::EndTooltip();
+                }
+            }
+        }
+        return;
+    }
+    // the window: a card per slot, as many across as fit
+    ImGui::TextColored(kAccent, "Quick save slots");
+    textWrappedDisabled("for %s.  Ctrl+1..9 loads, Ctrl+Shift+1..9 saves.", host.slotProgram().c_str());
+    const ImGuiStyle& st = ImGui::GetStyle();
+    const float cardW = std::max(96.0f, 140.0f * uiScale);
+    const float avail = ImGui::GetContentRegionAvail().x;
+    const int across = std::max(1, (int)((avail + st.ItemSpacing.x) / (cardW + st.ItemSpacing.x)));
+    const float w = std::min(avail, (avail - st.ItemSpacing.x * (across - 1)) / across);
+    const float h = w * 136.0f / 192.0f;
+    ImGui::BeginDisabled(!host.booted());
+    for (int s = 1; s <= EmuHost::SLOT_COUNT; s++) {
+        if ((s - 1) % across) ImGui::SameLine();
+        const EmuHost::SlotInfo& info = host.slotInfo(s);
+        ImGui::PushID(s);
+        ImGui::BeginGroup();
+        const ImVec2 at = ImGui::GetCursorScreenPos();
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        if (const unsigned tex = info.used ? slotPicture(s) : 0) ImGui::Image((ImTextureID)(intptr_t)tex, ImVec2(w, h));
+        else {
+            ImGui::Dummy(ImVec2(w, h));
+            dl->AddRectFilled(at, ImVec2(at.x + w, at.y + h), ImGui::GetColorU32(ImGuiCol_FrameBg));
+            const char* t = info.used ? "(no picture)" : "empty";
+            const ImVec2 ts = ImGui::CalcTextSize(t);
+            dl->AddText(ImVec2(at.x + (w - ts.x) / 2, at.y + (h - ts.y) / 2), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
+        }
+        // the slot's number in its corner
+        char n[4]; std::snprintf(n, sizeof n, "%d", s);
+        dl->AddRectFilled(at, ImVec2(at.x + ImGui::GetFontSize() * 1.2f, at.y + ImGui::GetFontSize() * 1.2f), IM_COL32(0, 0, 0, 170));
+        dl->AddText(ImVec2(at.x + ImGui::GetFontSize() * 0.3f, at.y + ImGui::GetFontSize() * 0.1f), ImGui::GetColorU32(kAccent), n);
+        if (info.used && ImGui::IsItemHovered()) ImGui::SetTooltip("Saved %s\nDouble-click to load", info.when.c_str());
+        if (info.used && ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) host.loadSlot(s);
+        const float bw = (w - st.ItemSpacing.x) / 2;
+        if (ImGui::Button("Save", ImVec2(bw, 0))) host.saveSlot(s);
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!info.used);
+        if (ImGui::Button("Load", ImVec2(bw, 0))) host.loadSlot(s);
+        ImGui::EndDisabled();
+        ImGui::EndGroup();
+        ImGui::PopID();
+    }
+    ImGui::EndDisabled();
+    ImGui::BeginDisabled(!host.canUndoLoad());
+    if (ImGui::SmallButton("Undo the last load")) host.undoSlotLoad();
+    ImGui::EndDisabled();
+}
+
+// a file named for the program and the time, in the recordings folder
+void GuiShell::startRecordingDialog(bool video) {
+    std::error_code ec;
+    std::filesystem::create_directories(std::filesystem::u8path(host.recordDir), ec);
+    const std::time_t t = std::time(nullptr);
+    char when[32] = "";
+    if (const std::tm* tm = std::localtime(&t)) std::strftime(when, sizeof when, "_%Y%m%d_%H%M%S", tm);
+    const std::string name = host.slotProgram() + when + (video ? ".avi" : ".wav");
+    saver.open(video ? "Record video" : "Record sound", host.recordDir, name, [this](const std::string& p) {
+        std::string why;
+        if (!host.startRecording(p, why)) host.status = why;
+    });
+}
+
+void GuiShell::recordMenu() {
+    if (!ImGui::BeginMenu("Record", host.booted())) return;
+    ImGui::BeginDisabled(host.recording());
+    if (ImGui::MenuItem("Video and sound (.avi)...")) startRecordingDialog(true);
+    if (ImGui::MenuItem("Sound only (.wav)...")) startRecordingDialog(false);
+    ImGui::EndDisabled();
+    if (ImGui::MenuItem("Stop recording", nullptr, false, host.recording())) host.stopRecording();
+    ImGui::Separator();
+    ImGui::TextDisabled("Video format");
+    if (ImGui::MenuItem("MJPEG (plays in most players)", nullptr, host.recordFormat == "mjpeg", !host.recording())) host.recordFormat = "mjpeg";
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Every frame a JPEG: Windows' own player plays it. About 4 MB a second.");
+    if (ImGui::MenuItem("ZMBV, lossless (VLC, ffmpeg, editors)", nullptr, host.recordFormat == "zmbv", !host.recording())) host.recordFormat = "zmbv";
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("Every pixel exact, and only the changes stored: small files.\n"
+                          "VLC, ffmpeg and the video editors built on them play it; Windows' own player does not.");
+    ImGui::EndMenu();
+}
+
+void GuiShell::recentFilesMenu() {
+    if (!ImGui::BeginMenu("Recent files", !host.recentFiles.empty())) return;
+    std::string load;
+    for (size_t i = 0; i < host.recentFiles.size(); i++) {
+        const std::string& p = host.recentFiles[i];
+        std::error_code ec;
+        const std::filesystem::path path = std::filesystem::u8path(p);
+        const bool there = std::filesystem::is_regular_file(path, ec);
+        std::string ext = path.extension().u8string();
+        for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+        const char* kind = ext == ".cpr" ? "cartridge" : ext == ".sna" ? "snapshot"
+                         : (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") ? "tape" : "disc";
+        char label[400];
+        std::snprintf(label, sizeof label, "%zu  %s##recent%zu", i + 1, path.filename().u8string().c_str(), i);
+        if (ImGui::MenuItem(label, kind, false, there)) load = p;
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s%s", p.c_str(), there ? "" : "\n(the file is not there now)");
+    }
+    ImGui::Separator();
+    if (ImGui::MenuItem("Clear the list")) host.clearRecent();
+    ImGui::EndMenu();
+    if (!load.empty()) host.loadByExtension(load);    // after the loop: it changes the list
 }
 
 // ============================================================== settings windows
@@ -1164,6 +1328,8 @@ void GuiShell::windowMedia() {
             ImGui::BeginDisabled(!host.booted());
             if (row.smallButton("Screenshot .bmp...")) saver.open("Save screenshot", host.romDir, "screenshot.bmp", [this](const std::string& p) { host.saveScreenshotBmp(p); });
             ImGui::EndDisabled();
+            ImGui::Separator();
+            quickSlots(false, false);
         }
         ImGui::End();
     }
@@ -1197,8 +1363,12 @@ void GuiShell::windowAbout() {
     ImGui::SetNextWindowSize(ImVec2(520, 0), ImGuiCond_FirstUseEver);
     if (ImGui::Begin("About CPCSyntaxError", &showAbout, ImGuiWindowFlags_NoDocking)) {
         WrapText wrapText;                     // text wraps at the window's edge
-        ImGui::TextColored(kAccent, "CPCSyntaxError");
+        ImGui::TextColored(kAccent, "CPCSyntaxError %s", CPCSE_VERSION);
         ImGui::TextDisabled("Amstrad CPC / Plus / GX4000 emulator");
+        ImGui::Separator();
+        ImGui::TextUnformatted("Author and prompter: WacKEDmaN");
+        ImGui::TextUnformatted("Code written with Claude (Anthropic)");
+        ImGui::TextDisabled("github.com/WacKEDmaN/CPCSyntaxError");
         ImGui::Separator();
         // ACCC §2.2 "Attribution Directive": the compendium the CRTC emulation is built
         // from asks for its mention "within the About / Credits window or documentation

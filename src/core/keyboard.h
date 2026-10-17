@@ -11,6 +11,10 @@ using CharCell = std::array<int, 3>;  // [row, bit, shift]
 
 std::string normalizeCpcKeyboardRegion(const std::string& region = "uk");
 std::optional<CharCell> cpcCharacterMapping(const std::string& character, const std::string& code, const std::string& region = "uk");
+// What is printed on the key at matrix row/bit of this CPC keyboard (uk, fr, es): [0] what
+// it types alone, [1] with SHIFT ("" when the key shows one legend, as a letter does). From
+// the tables the PC layout types by; empty for the keys with names (ESC, SHIFT...).
+std::array<std::string, 2> cpcKeyLegend(int row, int bit, const std::string& region = "uk");
 
 class KeyboardMatrix {
 public:

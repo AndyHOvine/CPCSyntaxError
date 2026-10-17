@@ -26,12 +26,14 @@
 #include <map>
 #include <memory>
 #include <ostream>
+#include <set>
 #include <string>
 #include <vector>
 
 #include "emuhost.h"
 #include "gui_debugger.h"
 #include "gui_widgets.h"
+#include "core/profiler.h"
 
 namespace cpcse {
 
@@ -162,11 +164,21 @@ private:
     const char* focusWindowNextFrame = nullptr;
     void windowAbout();
     void sectionRoms(bool asMenu);
+    // the quick save slots: a grid of their pictures (the Snapshot window), or menu items
+    void quickSlots(bool asMenu, bool save);
+    unsigned slotTexture[EmuHost::SLOT_COUNT + 1] = {};
+    long slotTextureRevision[EmuHost::SLOT_COUNT + 1] = {};
+    unsigned slotPicture(int slot);           // its picture's texture, or 0
+    void recentFilesMenu();
+    void recordMenu();
+    void startRecordingDialog(bool video);
 
     // settings sections and tool windows (gui_panels.cpp)
     void sectionVideo(bool asMenu);
     void sectionAudio(bool asMenu);
     void sectionInput(bool asMenu);
+    void joystickDeviceItems(int port, bool asMenu);
+    void joystickSettings();
     void sectionExpansions(bool asMenu);
     void sectionTape(bool asMenu);
     void tapeDeckControls(bool asMenu);       // counter, time, block, motor, transport buttons
@@ -222,6 +234,33 @@ private:
     bool cslChain = true, cslErrata = true;
     struct CslRun;
     std::shared_ptr<CslRun> cslRun;
+
+    // the code profiler (gui_profiler.cpp)
+    void windowProfiler();
+    CodeProfiler profiler;
+    bool profilerRecording = false;
+    std::vector<uint32_t> profilerMap;
+    unsigned profilerTexture = 0;
+
+    // the on-screen CPC keyboard (gui_keyboard.cpp)
+    void windowCpcKeyboard();
+    int keyboardLook = 0;                     // 0 as the machine; 1 464, 2 664, 3 6128, 4 Plus
+    int keyboardHeld = -1;                    // row << 3 | bit held by the mouse
+    std::set<int> keyboardLatched;            // held by a right click
+
+    // the graphics finder (gui_gfx_finder.cpp)
+    void windowGraphicsFinder();
+    struct GfxFinder {
+        int source = 0, lastSource = 0, format = 1, palette = 0;
+        int address = 0xc000, widthBytes = 80, height = 200, zoom = 2;
+        bool screenLayout = true, cpcShape = true, grid = true;
+        int selected = -1;
+    } gfx;
+    std::vector<uint32_t> gfxPixels;
+    unsigned gfxFinderTexture = 0;
+    int gfxRead(int address) const;
+    int gfxAddress(int start, int x, int y) const;
+    uint32_t gfxInk(int pen) const;
 
     // debugger windows (gui_debug_views.cpp)
     void windowDebugger();          // toolbar, registers, disassembly, breakpoints

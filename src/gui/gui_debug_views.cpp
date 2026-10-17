@@ -309,6 +309,18 @@ void GuiShell::disassemblyContent() {
             if (addr == pc) ImGui::PushStyleColor(ImGuiCol_Text, kPcColour);
             ImGui::Selectable(line, false, ImGuiSelectableFlags_AllowDoubleClick);
             if (addr == pc) ImGui::PopStyleColor();
+            // the profiler's share of the time, a bar at the right of the line
+            if (profiler.totalCycles && !profiler.cycles.empty() && profiler.cycles[(size_t)addr]) {
+                const double pct = 100.0 * (double)profiler.cycles[(size_t)addr] / (double)profiler.totalCycles;
+                const ImVec2 r0 = ImGui::GetItemRectMin(), r1 = ImGui::GetItemRectMax();
+                char t[16]; std::snprintf(t, sizeof t, "%.2f%%", pct);
+                const float tw = ImGui::CalcTextSize(t).x, barW = ImGui::GetFontSize() * 3.0f;
+                const float x1 = r1.x - 4, x0 = x1 - barW;
+                dl->AddRectFilled(ImVec2(x0, r0.y + 3), ImVec2(x0 + barW * (float)std::min(1.0, pct / 20.0), r1.y - 3), IM_COL32(230, 120, 40, 140));
+                dl->AddText(ImVec2(x0 - tw - 4, r0.y), ImGui::GetColorU32(ImGuiCol_TextDisabled), t);
+                if (ImGui::IsItemHovered())
+                    ImGui::SetTooltip("Profiler: run %u times, %.2f%% of the time recorded", profiler.count[(size_t)addr], pct);
+            }
             if (ImGui::IsItemHovered() && ImGui::IsMouseDoubleClicked(0)) debugger.toggleBreakpoint(addr);
             if (ImGui::BeginPopupContextItem("##ctx")) {
                 ImGui::TextDisabled("&%04X", addr);

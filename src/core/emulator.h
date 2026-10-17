@@ -6,6 +6,7 @@
 #include "cpr_loader.h"
 #include "debug_symbols.h"
 #include "logic_analyser.h"
+#include "profiler.h"
 #include <any>
 
 namespace cpcse {
@@ -184,6 +185,8 @@ public:
     // it is enabled; a trigger it fires stops the machine as a breakpoint does.
     LogicAnalyser analyser;
     void recordAnalyser();
+    // The code profiler (profiler.h): told every step while set; null, nothing is done.
+    CodeProfiler* profiler = nullptr;
     // The raster timing overlay (RasterLine::ioMarks): each OUT noted on the line being swept
     // while ioOverlay is set; nothing otherwise.
     bool ioOverlay = false;

@@ -98,8 +98,10 @@ struct HostSide {
     std::function<std::optional<int>(int, int)> lightgunRasterSampler, lightgunPixelSampler;
     uint64_t inputDueAt = UINT64_MAX;
     bool ioOverlay = false;
+    CodeProfiler* profiler = nullptr;
     void take(GX4000& m) {
         ioOverlay = m.ioOverlay;
+        profiler = m.profiler;
         std::swap(analyser, m.analyser);
         rasterFrame.swap(m.rasterFrame); previousRasterFrame.swap(m.previousRasterFrame); rasterPool.swap(m.rasterPool);
         debuggerPaused = m.debuggerPaused; breakpoints = m.breakpoints; breakpointPredicate = m.breakpointPredicate;
@@ -112,6 +114,7 @@ struct HostSide {
     }
     void give(GX4000& m) {
         m.ioOverlay = ioOverlay;
+        m.profiler = profiler;
         std::swap(analyser, m.analyser);
         rasterFrame.swap(m.rasterFrame); previousRasterFrame.swap(m.previousRasterFrame); rasterPool.swap(m.rasterPool);
         m.debuggerPaused = debuggerPaused; m.breakpoints = breakpoints; m.breakpointPredicate = breakpointPredicate;
@@ -148,7 +151,13 @@ std::unique_ptr<MachineSnapshot> MachineSnapshot::capture(GX4000& m) {
     { TapeBulk bulk; bulk.take(*m.tape); p.tape.emplace(*m.tape); bulk.give(*m.tape); }
     p.asic.emplace(*m.asic);
     p.gateArray.emplace(*m.gateArray);
-    if (m.v9990 && m.v9990->enabled) p.v9990.emplace(*m.v9990);
+    if (m.v9990 && m.v9990->enabled) {
+        // its pictures (the one being drawn, the one shown) are output, like the CPC's: not kept
+        V9990Picture work, shown;
+        std::swap(work, m.v9990->work); std::swap(shown, m.v9990->shown);
+        p.v9990.emplace(*m.v9990);
+        std::swap(work, m.v9990->work); std::swap(shown, m.v9990->shown);
+    }
     if (m.playcity && m.playcity->enabled) p.playcity.emplace(*m.playcity);
     if (m.symbifaceMouse) p.symbifaceMouse.emplace(*m.symbifaceMouse);
     if (m.sf2Rtc) p.sf2Rtc.emplace(*m.sf2Rtc);
@@ -163,9 +172,19 @@ std::unique_ptr<MachineSnapshot> MachineSnapshot::capture(GX4000& m) {
     p.gamepad.emplace(*m.gamepad);
     p.fdc.emplace(*m.fdc);
     p.cpu.emplace(*m.cpu);
-    s->bytes = sizeof(Parts) + p.memory->ram.size() + p.memory->asicRam.size() + p.tape->pulseQueue.size() * sizeof(PulseEvent)
-             + p.ay->sampleQueue.size() * sizeof(std::array<double, 2>) + 64 * 1024;
-    if (p.v9990) s->bytes += 512 * 1024;
+    // what it holds: every buffer of any size in the copies (the budget counts this)
+    size_t b = sizeof(Parts);
+    b += p.memory->ram.capacity() + p.memory->asicRam.capacity() + p.memory->accessMap.capacity();
+    b += p.tape->pulseQueue.capacity() * sizeof(PulseEvent) + p.tape->recordPulses.capacity() * sizeof(uint32_t)
+       + p.tape->recorded.capacity() + p.tape->loopStack.capacity() * sizeof(LoopFrame)
+       + (p.tape->blockFast.capacity() + p.tape->blockZero.capacity() * sizeof(double));
+    b += p.ay->sampleQueue.capacity() * sizeof(std::array<double, 2>) + p.dac->sampleQueue.capacity() * sizeof(double);
+    b += p.fdc->transfer.capacity() + p.fdc->params.capacity() * sizeof(int);
+    if (p.v9990) b += p.v9990->vram.capacity() + p.v9990->lineSprites.capacity() * 64;
+    if (p.multiface) b += p.multiface->rom.capacity() + 16 * 1024;
+    for (const auto& l : p.coreCopy().rasterCapture) if (l) b += sizeof(RasterLine) + 6 * 1024;
+    b += p.coreCopy().spritePatternSnapshot.capacity();
+    s->bytes = b;
     return s;
 }
 
@@ -200,7 +219,12 @@ void MachineSnapshot::restore(GX4000& m) const {
         *m.gateArray = *p.gateArray;
         m.gateArray->onPixel = onPixel;
     }
-    if (p.v9990 && m.v9990) *m.v9990 = *p.v9990;
+    if (p.v9990 && m.v9990) {
+        V9990Picture work, shown;          // the live pictures stay
+        std::swap(work, m.v9990->work); std::swap(shown, m.v9990->shown);
+        *m.v9990 = *p.v9990;
+        std::swap(work, m.v9990->work); std::swap(shown, m.v9990->shown);
+    }
     if (p.playcity && m.playcity) *m.playcity = *p.playcity;
     if (p.symbifaceMouse && m.symbifaceMouse) *m.symbifaceMouse = *p.symbifaceMouse;
     if (p.sf2Rtc && m.sf2Rtc) *m.sf2Rtc = *p.sf2Rtc;

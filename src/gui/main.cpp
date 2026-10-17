@@ -38,6 +38,7 @@
 #include "cpc_typing.h"
 #include "devserver.h"
 #include "emuhost.h"
+#include "version.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
 #include "gui_widgets.h"
@@ -232,7 +233,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -271,6 +272,8 @@ int main(int argc, char** argv) {
             else if (a == "--speech" && i + 1 < argc) speechKind = argv[++i]; // ssa1 / dktronics / lambdaspeak3
             else if (a == "--mp3card" && i + 1 < argc) mp3Card = argv[++i];   // LambdaSpeak 3's MP3 card folder
             else if (a == "--wav" && i + 1 < argc) wavPath = argv[++i];        // the sound of the whole run
+            else if (a == "--record" && i + 1 < argc) recordPath = argv[++i];  // the whole run to .avi (or .wav)
+            else if (a == "--record-format" && i + 1 < argc) recordFormat = argv[++i];   // mjpeg (default) or zmbv
             else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
             else if (a == "--ide" && i + 1 < argc) { ideFolder = argv[++i]; sf2 = true; }   // its IDE, this folder the disc
@@ -336,6 +339,11 @@ int main(int argc, char** argv) {
                     if (!wavPath.empty()) wav.insert(wav.end(), host.audioOut.begin(), host.audioOut.end());
                 }
             };
+            if (!recordPath.empty()) {
+                host.recordFormat = recordFormat;
+                std::string why;
+                if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
+            }
             if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
             if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
@@ -570,6 +578,7 @@ int main(int argc, char** argv) {
                 std::printf("[wav] %s: %.1f s, rms %.0f, peak %d\n", wavPath.c_str(), wav.size() / 2.0 / host.sampleRate,
                             wav.empty() ? 0.0 : std::sqrt(sum / wav.size()), peak);
             }
+            if (host.recording()) { host.stopRecording(); std::printf("[record] %s: %s\n", recordPath.c_str(), host.status.c_str()); }
             host.render();
             if (host.emu && host.emu->crtc) { auto* c = host.emu->crtc; std::printf("[regs] type=%d R0=%d R1=%d R2=%d R3=%d R4=%d R5=%d R6=%d R7=%d R8=%d R9=%d R12=%d R13=%d\n",
                 c->type, c->registers[0],c->registers[1],c->registers[2],c->registers[3],c->registers[4],c->registers[5],c->registers[6],c->registers[7],c->registers[8],c->registers[9],c->registers[12],c->registers[13]); }
@@ -630,7 +639,7 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
 
     SDL_Window* window = SDL_CreateWindow(
-        "CPCSyntaxError", SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+        "CPCSyntaxError " CPCSE_VERSION, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
         winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
     if (!window) { SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", SDL_GetError(), nullptr); SDL_Quit(); return 1; }
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
@@ -702,6 +711,7 @@ int main(int argc, char** argv) {
     host.mechanicsVolume = level("noises_volume", 0.5, 0.0, 1.0);
     host.dacType        = gets("dac", "none");
     host.keyboardRegion = gets("region", "uk");
+    host.keyboardMapping = gets("keymapping", "cpc") == "pc" ? "pc" : "cpc";
     host.joystickEnabled = geti("joystick", 1) != 0;
     host.speed          = level("speed", 1.0, 0.25, 4.0);
     host.integerScale   = geti("integerscale", 0) != 0;
@@ -746,6 +756,13 @@ int main(int argc, char** argv) {
     host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);
     host.tapeTurbo      = std::clamp(geti("tapeturbo", 1), 1, (int)EmuHost::TAPE_TURBO_UNLIMITED);
     host.beamRenderer   = geti("beam", 0) != 0;
+    host.recordFormat   = gets("recordformat", "mjpeg") == "zmbv" ? "zmbv" : "mjpeg";
+    host.stateDir       = homeDir() + "states";     // the quick save slots
+    host.recordDir      = homeDir() + "recordings";
+    for (size_t i = EmuHost::RECENT_MAX; i-- > 0;) {
+        const std::string r = gets(("recent." + std::to_string(i)).c_str(), "");
+        if (!r.empty()) host.noteRecent(r);     // oldest first: the newest ends on top
+    }
 
     host.gateArrayPart  = geti("gatearray", 0);            // applied by bootModel
     // Boot the default machine.
@@ -834,32 +851,10 @@ int main(int argc, char** argv) {
     int emuFrameCount = 0;
     float emuSpeedPct = 0.0f;
 
-    // Physical game controllers -> CPC joysticks (pad 0 -> joy 0, pad 1 -> joy 1
-    // for GX4000 dual). Hot-pluggable.
-    std::vector<SDL_GameController*> pads;
-    auto openPads = [&]() {
-        for (auto* c : pads) if (c) SDL_GameControllerClose(c);
-        pads.clear();
-        for (int i = 0; i < SDL_NumJoysticks() && (int)pads.size() < 2; i++)
-            if (SDL_IsGameController(i)) { if (SDL_GameController* c = SDL_GameControllerOpen(i)) pads.push_back(c); }
-    };
-    openPads();
-    auto pollPads = [&]() {
-        if (!host.emu || !host.emu->gamepad || host.liveInputBlocked()) return;   // a movie plays its own
-        std::vector<Gamepad> gs;
-        for (auto* c : pads) {
-            if (!c) continue;
-            Gamepad g; g.buttons.assign(16, false); g.axes.assign(2, 0.0);
-            auto b = [&](int idx, SDL_GameControllerButton sb) { g.buttons[idx] = SDL_GameControllerGetButton(c, sb) != 0; };
-            b(0, SDL_CONTROLLER_BUTTON_A); b(1, SDL_CONTROLLER_BUTTON_B);
-            b(12, SDL_CONTROLLER_BUTTON_DPAD_UP); b(13, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
-            b(14, SDL_CONTROLLER_BUTTON_DPAD_LEFT); b(15, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
-            g.axes[0] = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTX) / 32768.0;
-            g.axes[1] = SDL_GameControllerGetAxis(c, SDL_CONTROLLER_AXIS_LEFTY) / 32768.0;
-            gs.push_back(g);
-        }
-        host.emu->gamepad->update(gs);
-    };
+    // Physical joysticks and joypads -> the CPC's joysticks (joypads.h): each CPC joystick
+    // takes the device chosen for it, through that device's own map. Hot-pluggable.
+    host.pads.load(ini);
+    host.pads.open();
 
     // The mouse grab: a click on a picture takes the host mouse for the CPC's (every motion
     // reaches it, wherever the host pointer would be); F12, the middle button, or the
@@ -873,13 +868,14 @@ int main(int argc, char** argv) {
     bool running = true;
     while (running) {
         SDL_Event ev;
+        SDL_Scancode waitingForText = SDL_SCANCODE_UNKNOWN;   // the PC layout: a key waiting for the character it types
         while (SDL_PollEvent(&ev)) {
             const bool mouseEvent = ev.type == SDL_MOUSEMOTION || ev.type == SDL_MOUSEBUTTONDOWN
                                  || ev.type == SDL_MOUSEBUTTONUP || ev.type == SDL_MOUSEWHEEL;
             if (!(host.mouseCaptured && mouseEvent)) ImGui_ImplSDL2_ProcessEvent(&ev);
             if (ev.type == SDL_QUIT) running = false;
             if (shell.quitRequested) running = false;
-            if (ev.type == SDL_CONTROLLERDEVICEADDED || ev.type == SDL_CONTROLLERDEVICEREMOVED) openPads();
+            if (ev.type == SDL_JOYDEVICEADDED || ev.type == SDL_JOYDEVICEREMOVED) host.pads.open();
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                 ev.window.windowID == SDL_GetWindowID(window)) running = false;
             if (ev.type == SDL_DROPFILE && ev.drop.file) { host.loadByExtension(ev.drop.file); SDL_free(ev.drop.file); }
@@ -901,10 +897,25 @@ int main(int argc, char** argv) {
                 if (ev.key.keysym.scancode == SDL_SCANCODE_F11) toggleFullscreen();
                 else if (ev.key.keysym.scancode == SDL_SCANCODE_F12) releaseMouse();
                 else if (ev.key.keysym.scancode == SDL_SCANCODE_F10 && host.multifaceEnabled) host.multifaceStop();   // its STOP button
-                else if (shell.keyboardToCpc()) host.setKey(ev.key.keysym.scancode, true);
+                else if (shell.keyboardToCpc()) {
+                    // The PC layout: a key that types a character waits for that character (the
+                    // text event that follows it) and presses the CPC key that types it; any
+                    // other key, or one that typed nothing, goes by its position.
+                    const SDL_Keycode sym = ev.key.keysym.sym;
+                    const bool typing = host.keyboardMapping == "pc" && sym != SDLK_SPACE && ((sym > 32 && sym < 127) || (sym >= 160 && sym < 0x40000000))
+                                        && !(ev.key.keysym.mod & (KMOD_CTRL | KMOD_GUI)) ;
+                    if (typing) waitingForText = ev.key.keysym.scancode;
+                    else host.setKey(ev.key.keysym.scancode, true);
+                }
+            }
+            if (ev.type == SDL_TEXTINPUT && waitingForText != SDL_SCANCODE_UNKNOWN && !io.WantTextInput) {
+                host.setKeyChar(waitingForText, ev.text.text);
+                waitingForText = SDL_SCANCODE_UNKNOWN;
             }
         }
-        pollPads();   // feed physical controllers into the CPC joysticks
+        // a key that typed nothing after all (a dead key, a shortcut): by its position
+        if (waitingForText != SDL_SCANCODE_UNKNOWN) { host.setKey(waitingForText, true); waitingForText = SDL_SCANCODE_UNKNOWN; }
+        host.pollPads();   // the physical joysticks into the CPC's
         dev.poll();   // an external debugger's or script's requests, a watched file, typing
 
         uint64_t now = SDL_GetPerformanceCounter();
@@ -1029,6 +1040,8 @@ int main(int argc, char** argv) {
             f << "noises_volume=" << host.mechanicsVolume << "\n";
             f << "dac=" << host.dacType << "\n";
             f << "region=" << host.keyboardRegion << "\n";
+            f << "keymapping=" << host.keyboardMapping << "\n";
+            host.pads.save(f);
             f << "joystick=" << (host.joystickEnabled ? 1 : 0) << "\n";
             f << "speed=" << host.speed << "\n";
             f << "integerscale=" << (host.integerScale ? 1 : 0) << "\n";
@@ -1071,6 +1084,8 @@ int main(int argc, char** argv) {
             f << "tapefastbaud=" << host.tapeFastBaud << "\n";
             f << "tapeturbo=" << host.tapeTurbo << "\n";
             f << "beam=" << (host.beamRenderer ? 1 : 0) << "\n";
+            f << "recordformat=" << host.recordFormat << "\n";
+            for (size_t i = 0; i < host.recentFiles.size(); i++) f << "recent." << i << "=" << host.recentFiles[i] << "\n";
             shell.saveSettings(f);
             f << "winw=" << cw << "\n";
             f << "winh=" << ch << "\n";
@@ -1079,6 +1094,7 @@ int main(int argc, char** argv) {
         writeFileSafely(iniFilePath(), text.data(), text.size());
     }
 
+    host.stopRecording();                       // a recording running at exit: finished
     if (audioDev) SDL_CloseAudioDevice(audioDev);
     glDeleteTextures(1, &screenTex);
     for (auto& kv : toolTextures) glDeleteTextures(1, &kv.second.id);
@@ -1087,7 +1103,7 @@ int main(int argc, char** argv) {
     ImGui::DestroyContext();
     SDL_GL_DeleteContext(gl);
     SDL_DestroyWindow(window);
-    for (auto* c : pads) if (c) SDL_GameControllerClose(c);
+    host.pads.close();
     SDL_Quit();
     return 0;
 }

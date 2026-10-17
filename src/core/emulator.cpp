@@ -1254,6 +1254,8 @@ int GX4000::stepInstruction() {
         gateArray->acknowledgeInterrupt();
         r52AcknowledgedThisStep = true;
     }
+    const int profilePc = cpu->pc & 0xffff, profileSp = cpu->sp & 0xffff;
+    const int profileOpcode = profiler ? memory->readMapped(profilePc) : 0;
     int z80Cycles = cpu->step();
     int cycles = cpcInstructionCycles(z80Cycles);
     if (responseSharesMicrosecond && cpu->lastWasInterrupt) cycles -= 4;
@@ -1314,6 +1316,7 @@ int GX4000::stepInstruction() {
     }
     machineCycles += cycles;
     timingInstructionActive = false;
+    if (profiler) profiler->step(profilePc, profileSp, profileOpcode, cpu->pc & 0xffff, cpu->sp & 0xffff, cycles, cpu->lastWasInterrupt);
     if (m4->networkActive()) m4->netTick();
     // The GFX9000 runs its own raster; its /INT is a level on the CPC's /INT, held while a
     // flag it enables is set, so the Z80A is asked again after each acknowledge until the

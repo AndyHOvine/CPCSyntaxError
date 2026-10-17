@@ -58,7 +58,9 @@ struct V9990Picture {
     int lines = 290;
 };
 
+class MachineSnapshot;
 class V9990 {
+    friend class MachineSnapshot;   // the timeline leaves its pictures out of a snapshot
 public:
     bool enabled = false;
     Bytes vram;

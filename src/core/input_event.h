@@ -20,6 +20,7 @@ struct InputEvent {
         Cheats,           // EmuHost: the cheat list's freezes applied
         TapeDeck,         // EmuHost: a tape button (a: DECK_PLAY.., b: the block for DECK_SEEK)
         Reset,            // EmuHost::reset: the machine's reset button
+        Analogue,         // EmuHost::setAnalogue(a, b): a Plus analogue channel
     };
     enum TapeButton { DECK_PLAY, DECK_PAUSE, DECK_REWIND, DECK_REWIND_BLOCK, DECK_FAST_FORWARD, DECK_SEEK, DECK_STOP };
     uint64_t at = 0;      // GX4000::instructions when it came: it goes in before that instruction

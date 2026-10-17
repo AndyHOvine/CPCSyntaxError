@@ -139,6 +139,30 @@ std::optional<CharCell> cpcCharacterMapping(const std::string& character, const 
     return std::nullopt;
 }
 
+std::array<std::string, 2> cpcKeyLegend(int row, int bit, const std::string& regionIn) {
+    const std::string region = normalizeCpcKeyboardRegion(regionIn);
+    std::array<std::string, 2> out;
+    if (region == "uk") {
+        // the UK keyboard's keycaps
+        static const std::map<std::pair<int, int>, std::array<std::string, 2>> uk = {
+            {{8,0},{"1","!"}}, {{8,1},{"2","\""}}, {{7,1},{"3","#"}}, {{7,0},{"4","$"}}, {{6,1},{"5","%"}}, {{6,0},{"6","&"}},
+            {{5,1},{"7","'"}}, {{5,0},{"8","("}}, {{4,1},{"9",")"}}, {{4,0},{"0","_"}}, {{3,1},{"-","="}}, {{3,0},{"^","\xc2\xa3"}},
+            {{3,2},{"@","|"}}, {{2,1},{"[","{"}}, {{3,5},{":","*"}}, {{3,4},{";","+"}}, {{2,3},{"]","}"}},
+            {{4,7},{",","<"}}, {{3,7},{".",">"}}, {{3,6},{"/","?"}}, {{2,6},{"\\","`"}} };
+        const auto it = uk.find({ row, bit });
+        if (it != uk.end()) return it->second;
+        for (const auto& kv : keyMap())
+            if (kv.first.size() == 4 && kv.first.rfind("Key", 0) == 0 && kv.second[0] == row && kv.second[1] == bit) { out[0] = kv.first.substr(3); break; }
+        return out;
+    }
+    for (const auto& kv : regionalMap(region))
+        if (kv.second[0] == row && kv.second[1] == bit) out[(size_t)(kv.second[2] ? 1 : 0)] = kv.first;
+    // a letter shows its capital alone
+    if (out[0] == "\xc3\xb1") { out[0] = "\xc3\x91"; out[1].clear(); }
+    else if (!out[1].empty() && out[0] != out[1] && toLowerStr(out[1]) == out[0]) { out[0] = out[1]; out[1].clear(); }
+    return out;
+}
+
 static const std::unordered_map<std::string, std::string>& numpadNavOff() {
     static const std::unordered_map<std::string, std::string> m = {
         {"Numpad8","ArrowUp"},{"Numpad2","ArrowDown"},{"Numpad4","ArrowLeft"},{"Numpad6","ArrowRight"},
@@ -250,7 +274,8 @@ bool KeyboardMatrix::setKey(const std::string& code, bool pressed, const std::st
     return (bool)characterMap || hasKey || hasJoy;
 }
 void KeyboardMatrix::setJoystick(int bit, bool pressed, const std::string& source, int player) {
-    if (!joystickEnabled) return;
+    // "joystick emulation" is the keys as a joystick: a real joystick works with it off too
+    if (!joystickEnabled && source != "gamepad") return;
     bool gp = source == "gamepad";
     int& prop = player == 1 ? (gp ? gamepadJoystick1 : keyboardJoystick1)
                             : (gp ? gamepadJoystick : keyboardJoystick);
