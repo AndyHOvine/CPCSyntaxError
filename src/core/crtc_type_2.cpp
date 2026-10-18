@@ -20,6 +20,7 @@ static const int WRITE_MASK[16] = { 0xff, 0xff, 0xff, 0x0f, 0x7f, 0x1f, 0x7f, 0x
 
 struct CrtcType2 : CrtcBehaviour {
     CrtcType2() { id = 2; name = "MC6845"; }
+    bool adjustEntryStepNeedsRasterMatch() const override { return true; }   // §12: C4=R4+1 if C9==R9
     // ACCC §13.6's closing prose (p.124), printed under the last of its three
     // chronograms and so speaking for all of them:
     //

@@ -189,11 +189,17 @@ struct CrtcType1 : CrtcBehaviour {
         crtc.raster = (crtc.raster & ~1) | (crtc.rasterParity & 1);
         relatchLastLine(crtc);
     }
-    void onCharacterPosition(CRTC6845& crtc, int c0) const override {
-        // ACCC §21.3.1: the status bit-5 latch is evaluated at C0=R0. R6=0 with C4>0
+    void onLineStepped(CRTC6845& crtc) const override {
+        // ACCC §21.3.3: the status bit-5 latch is evaluated at C0=R0. R6=0 with C4>0
         // raises the BORDER but is NOT detected here ("the value 0, like in other
         // CRTC 1 registers, is handled in a special way").
-        if (c0 != crtc.registers[0]) return;
+        // The conditions are the NEW line's: p.248's diagrams name the line "When C0=0
+        // on this line: C4=C9=0", and an IN A,(C) whose read lands on that C0=0 already
+        // reads the new bit. So the latch is taken as C0=R0 ends, with C4/C9 stepped.
+        // MEASURED against hardware: SHAKER BS's photo on a real CRTC 1 prints "FIRST
+        // DETECTION (BIT 5=0) WITH IN A,(C) WHEN C0=#3D" on the line before the frame's
+        // first. Testing the line that ended printed #7D, one line late, and its search
+        // ran 74 steps (25 s, so BP was lost) where the script allows 10 (1.98 s).
         if (crtc.vertical == 0 && crtc.raster == 0) crtc.borderR6Status = false;
         else if (crtc.registers[6] != 0 && crtc.vertical == (crtc.registers[6] & 0x7f)
                  && crtc.raster == 0) crtc.borderR6Status = true;

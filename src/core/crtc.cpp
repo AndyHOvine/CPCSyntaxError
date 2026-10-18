@@ -270,9 +270,28 @@ void CRTC6845::writeRegister(int reg, int value) {
     // these CRTC's" -- it must be an OUT(C),r8.
     // "...WHILE R3l WAS GREATER THAN THIS VALUE" -- a write that merely restates the
     // value the counter has already passed is not the technique.
+    // The stop is IN THIS CHARACTER, as the OUTI's below: §9.3.4.2 makes the JIT that same
+    // end "0.25 usec after its scheduled end", and the scheduled end of R3l=C3l is the start
+    // of this character. MEASURED on SHAKER BI/B-D (OUT R3 on C3=1, 2, 3): ending it at the
+    // NEXT character drew every bar one character wider than AmSpiriT's (35/51/67 Pixel-M2
+    // against 20/36/52), while the OUTI rows, which end here, matched to the pixel (16/32/48).
+    // The counter steps as the character-start end stepped it, so the GATE ARRAY's
+    // microsecond count -- and with it §9.3.4.1's mode decision -- is the one it was.
+    // The first microsecond (C3l=0) is §14.4.4's own case -- R3=0 there "interrupts the
+    // HSYNC prematurely instead of delaying its end by 0.25 usec" -- handled on C0=R2 below.
     if (reg == 3 && hsync && !lastWriteBlockIo && behaviour->supportsR3Jit()
-        && (registers[3] & 0x0f) == hsyncCounter && r3PreviousLow > hsyncCounter)
-        r3JitPending = true;
+        && (registers[3] & 0x0f) == hsyncCounter && r3PreviousLow > hsyncCounter && hsyncCounter == 0) {
+        // CRTC 0 and 1 only: on CRTC 2 "R3=0 ... means that the HSYNC will be 16 usec",
+        // so 0 is a value still to reach and the HSYNC runs on (SHAKER BI/A: 225 Pixel-M2).
+        if (behaviour->r3ZeroFirstMicrosecondBlackEndPixel() >= 0) r3JitPending = true;
+    }
+    else if (reg == 3 && hsync && !lastWriteBlockIo && behaviour->supportsR3Jit()
+        && (registers[3] & 0x0f) == hsyncCounter && r3PreviousLow > hsyncCounter) {
+        hsyncCounter = (hsyncCounter + 1) & 0x0f;
+        hsync = false; hsyncEndedThisCharacter = true;
+        hsyncEndedJit = true; r3JitPending = false;
+        onHsync();
+    }
     // ...but "does not allow this technique" is about the JIT, not about the stop. §14.5.4.3
     // (p.141) charts the OUTI too: "5th µs OUTI (I/O R3=1)" on C0=R2+1 ends the HSYNC
     // exactly where an HSYNC programmed with R3=1 from the start ends -- black from the
@@ -714,7 +733,7 @@ void CRTC6845::startVsyncIfNeeded(bool liveWrite) {
         if (reentryBlocked) traceVsyncRefusal("r7Match latch");
         else if (vsync) traceVsyncRefusal("already in VSYNC");
         if (!reentryBlocked && !vsync) {
-            if (!behaviour->allowsVsyncStart(*this)) {
+            if (!(liveWrite ? behaviour->allowsVsyncOnR7Write(*this) : behaviour->allowsVsyncStart(*this))) {
                 traceVsyncRefusal("allowsVsyncStart");
                 // ACCC §13.2.2: this C4=R7 occurrence was never authorised (C0 did
                 // not reach 2). Consume it so it does not retry; §16.3 mechanism 2
@@ -1218,7 +1237,9 @@ bool CRTC6845::updateVerticalGeneral() {
                         verticalAdjust = 0; newFrame(); return true;
                     }
                 } else {
-                    if (behaviour->incrementsVerticalOnAdjustEntry()) vertical = (vertical + 1) & 0x7f;
+                    if (behaviour->incrementsVerticalOnAdjustEntry()
+                        && (!behaviour->adjustEntryStepNeedsRasterMatch() || rasterMatchesMaximum()))
+                        vertical = (vertical + 1) & 0x7f;
                     raster = behaviour->additionalLinesCountFromZero() ? 0 : baseRaster();
                 }
             }
@@ -1384,6 +1405,7 @@ void CRTC6845::updateVertical() {
         startDelayedVsyncLine();
         startVsyncIfNeeded();
     } else vlc = videoRaster(verticalScroll);
+    behaviour->onLineStepped(*this);
     updateTrojanLightgun();
     onScanline(scanlineInFrame);
 }

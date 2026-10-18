@@ -370,7 +370,7 @@ public:
     // to it with the inputs as they came. Running on from there replays the inputs that
     // came after, until a new one comes: from then the old future is gone. A change of the
     // machine's setup (model, RAM, chips, cards, media) or a reset starts it again.
-    bool timelineEnabled = true;
+    bool timelineEnabled = false;          // off by default: it holds up to timelineBudgetMB of snapshots
     int timelineInterval = 50;            // frames between snapshots (a second)
     int timelineBudgetMB = 256;
     struct TimelineInfo { uint64_t oldest = 0, now = 0, liveEnd = 0; size_t snapshots = 0, inputs = 0, bytes = 0; };

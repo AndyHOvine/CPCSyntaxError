@@ -492,6 +492,17 @@ struct CrtcBehaviour {
     //   CRTC 3,4  "C4 does not increment and is equal to R4"
     // So the ASIC does not even take the single step the others take on entry.
     virtual bool incrementsVerticalOnAdjustEntry() const { return true; }
+    // ACCC §13.2.1 (CRTC 0): R5 programmed on the last line before C0=3 gives the
+    // additional lines "with C4=R4+1 on the following line IF C9==R9 AT THE END OF LINE";
+    // §12 (CRTC 1, 2): "For the first additional line, C4=R4+1 if C9==R9". The frame end
+    // itself was latched at C0<2 (§10.3.1.2), but this one step reads C9 against R9 as they
+    // stand at the line's end: an R9 moved off C9 later in the last line leaves C4 at R4.
+    // (SHAKER CP/A: R9=6 written at C0=22 of the last line, C9=7: C4 stays #26.)
+    virtual bool adjustEntryStepNeedsRasterMatch() const { return false; }
+    // ACCC §11.5.2 (CRTC 0): "the VSYNC is blocked when R7 is updated with C4 on a position
+    // C0<2". An R7 write is judged by where it lands, not by the §13.2.2 state, which the
+    // C0=2 step sets after a write landing on C0=2 itself.
+    virtual bool allowsVsyncOnR7Write(CRTC6845& crtc) const { return allowsVsyncStart(crtc); }
     // ACCC §13.2.2 FREEZE OF VSYNC: on CRTC 0 a state set at C0=2 validates the
     // C4=R7 test for the NEXT C0=0 and is cancelled at C0=0. With R0<2, C0 never
     // reaches 2, so THAT C4=R7 occurrence is blocked (not vsync in general — the
@@ -514,6 +525,9 @@ struct CrtcBehaviour {
     // number of lines (R9 even)".
     virtual bool delaysVsyncOneLineInIvm(CRTC6845& crtc) const { return false; }
     virtual void onCharacterPosition(CRTC6845& crtc, int c0) const {}
+    // The line step at the end of C0=R0: C4/C9 already hold the line that C0=0 opens, and
+    // no CPU microsecond has seen C0=0 yet.
+    virtual void onLineStepped(CRTC6845& crtc) const {}
     // ACCC §10.3.1.2 (CRTC 0; §10.3.3 says CRTC 2 works the same way): the "last
     // frame line" is a LATCHED STATE, not a test made at the end of the line.
     // "If C4=R4 and C9=R9 when C0<2, then the last frame line state is triggered.

@@ -331,6 +331,13 @@ struct CrtcType0 : CrtcBehaviour {
     // §13.2.2 (p.106): "Each time C0=2, a state validates the update of C4=R7 on the next
     // C0=0. This state is cancelled when C0=0." (§16.4.1.2: the VSYNC is then blocked.)
     bool allowsVsyncStart(CRTC6845& crtc) const override { return crtc.vsyncAuthorized; }
+    bool allowsVsyncOnR7Write(CRTC6845& crtc) const override { return crtc.horizontal >= 2; }   // §11.5.2
+    // ACCC §14.4.4: R3=0 written by an OUT(C),r8 in the HSYNC's first µsec stops it early;
+    // "On a CRTC 0, the HSYNC starts on the 5th pixel-M2 and lasts 4 pixel-M2's" -- black
+    // on Pixel-M2 4 to 7. SHAKER BI/A draws that thin column (AmSpiriT 4 Pixel-M2); ours
+    // withheld the HSYNC and drew nothing.
+    int r3ZeroFirstMicrosecondBlackEndPixel() const override { return 8; }
+    bool adjustEntryStepNeedsRasterMatch() const override { return true; }                       // §13.2.1
     bool incrementsVerticalEachAdjustLine() const override { return false; }   // §13.2.4
     bool adjustmentCountsRasterToR5() const override { return true; }          // §11.2.2
     bool settlesAdjustLengthBeforeC0Three() const override { return true; }    // §13.2.1

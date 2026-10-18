@@ -146,9 +146,18 @@ void GateArray::onHsyncStart(int hsyncWidth, int hsyncDelay, bool betweenCharact
     // ASIC's of CRTC's 3 and 4. ASIC's delay HSYNC by 1 µsec", and §9.3.3's
     // chronogram duly moves that boundary to C0=52.
     // onHsyncStart() is raised from the end of the character C0=R2, whose own
-    // onCharacter() follows immediately and is swallowed by modeLatchJustArmed, so
-    // the countdown reaching 0 lands one character earlier than the µsec count.
-    modeLatchDelay = std::min(6, hsyncWidth) - 1 + hsyncDelay;
+    // onCharacter() follows immediately and is swallowed by modeLatchJustArmed. The
+    // countdown then reaches 0 in the onCharacter() that STARTS the character after the
+    // last one of HSYNC-GA, so a write landing anywhere in that last character (C0=51 in
+    // §9.3.2) is still taken. MEASURED on SHAKER AE/A, whose screen prints the answer: with
+    // min(6,R3)-1 the latch came at the start of C0=51 (52 on the ASIC), one character
+    // early on every chip -- the list began at MARKER 07 on CRTC 0/1/2 and 08 on CRTC 3/4,
+    // where the real machines print "READABLE MARKER 08 / CRT 3.4 >> R. MARKER 09".
+    // That is the 6 µsec the GATE ARRAY counts ITSELF (R3 >= 6). When a shorter R3 ends
+    // HSYNC-GA, the end is the CRTC's, and the old count matches the hardware: SHAKER AR
+    // (R3 < 6, mode updates against the HSYNC) on the real CPC has no unswitched block at
+    // the left of its colour bars, which the extra character put there on every chip.
+    modeLatchDelay = (hsyncWidth >= 6 ? 6 : hsyncWidth - 1) + hsyncDelay;
     modeLatchJustArmed = !betweenCharacters;
 }
 

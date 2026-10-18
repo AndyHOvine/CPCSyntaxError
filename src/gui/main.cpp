@@ -640,7 +640,8 @@ int main(int argc, char** argv) {
 
     SDL_Window* window = SDL_CreateWindow(
         "CPCSyntaxError " CPCSE_VERSION, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI);
+        winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
+                    | (std::getenv("CPCSE_HIDDEN_WINDOW") ? SDL_WINDOW_HIDDEN : 0));   // for tests: no window shown
     if (!window) { SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", SDL_GetError(), nullptr); SDL_Quit(); return 1; }
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
@@ -750,7 +751,7 @@ int main(int argc, char** argv) {
     host.diskWriteBack  = geti("diskwriteback", 1) != 0;   // a program's disc writes saved into its .dsk
     host.tapeRelayDelay = geti("taperelay", 1) != 0;
     host.tapeFastLoad   = geti("tapefastload", 1) != 0;
-    host.timelineEnabled = geti("timeline", 1) != 0;
+    host.timelineEnabled = geti("timeline", 0) != 0;
     host.timelineBudgetMB = std::clamp(geti("timelinemb", 256), 32, 1024);
     host.tapeInstantLoad = geti("tapeinstant", 0) != 0;
     host.tapeFastBaud   = std::clamp(geti("tapefastbaud", host.tapeFastBaud), (int)CPCTapeDrive::FAST_BAUD_MIN, (int)CPCTapeDrive::FAST_BAUD_MAX);

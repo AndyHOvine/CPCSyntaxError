@@ -8,6 +8,8 @@
 #include <cstring>
 #include <filesystem>
 #include <functional>
+#include <condition_variable>
+#include <mutex>
 #include <thread>
 
 #ifdef _WIN32
@@ -165,16 +167,73 @@ void ledGrid(std::initializer_list<LedItem> items, float column) {
     }
 }
 
-// work(begin, end) over 0..n in bands, one thread a band (up to 8), all done on return. Each
+// work(begin, end) over 0..n in bands, one band a thread (up to 8), all done on return. Each
 // band writes only its own rows, so the result is the same as one pass over 0..n.
+//
+// The worker threads are made ONCE and wait for work. A thread made and joined for every
+// band, every frame, left memory behind in this process each time (measured: the CRT blur
+// alone grew it 50 MB a second, to many GB; the same work on one thread grew it by nothing).
+namespace {
+class BandPool {
+public:
+    static BandPool& get() { static BandPool pool; return pool; }
+    int parts() const { return (int)workers.size() + 1; }
+    void run(int n, const std::function<void(int, int)>& work) {
+        std::unique_lock<std::mutex> g(lock);           // one caller at a time
+        const int p = parts();
+        const int step = (n + p - 1) / p;
+        job = &work; jobN = n; jobStep = step;
+        pending = 0;
+        for (int b = step; b < n; b += step) pending++;
+        generation++;
+        g.unlock();
+        wake.notify_all();
+        work(0, std::min(n, step));                     // the caller does the first band
+        g.lock();
+        done.wait(g, [&] { return pending == 0; });
+        job = nullptr;
+    }
+private:
+    BandPool() {
+        const int n = std::clamp((int)std::thread::hardware_concurrency(), 1, 8) - 1;
+        for (int i = 0; i < n; i++) workers.emplace_back([this, i] { loop(i); });
+    }
+    ~BandPool() {
+        { std::lock_guard<std::mutex> g(lock); quit = true; generation++; }
+        wake.notify_all();
+        for (std::thread& t : workers) t.join();
+    }
+    void loop(int index) {
+        long seen = 0;
+        std::unique_lock<std::mutex> g(lock);
+        for (;;) {
+            wake.wait(g, [&] { return generation != seen; });
+            seen = generation;
+            if (quit) return;
+            const int begin = (index + 1) * jobStep;    // band 0 is the caller's
+            if (!job || begin >= jobN) continue;
+            const std::function<void(int, int)>* w = job;
+            const int end = std::min(jobN, begin + jobStep);
+            g.unlock();
+            (*w)(begin, end);
+            g.lock();
+            if (--pending == 0) done.notify_all();
+        }
+    }
+    std::vector<std::thread> workers;
+    std::mutex lock;
+    std::condition_variable wake, done;
+    const std::function<void(int, int)>* job = nullptr;
+    int jobN = 0, jobStep = 0, pending = 0;
+    long generation = 0;
+    bool quit = false;
+};
+} // namespace
+
 static void inBands(int n, const std::function<void(int, int)>& work) {
-    const int parts = std::clamp((int)std::thread::hardware_concurrency(), 1, 8);
-    if (parts <= 1 || n < 64) { work(0, n); return; }
-    const int step = (n + parts - 1) / parts;
-    std::vector<std::thread> pool;
-    for (int b = step; b < n; b += step) pool.emplace_back(work, b, std::min(n, b + step));
-    work(0, std::min(n, step));
-    for (std::thread& t : pool) t.join();
+    BandPool& pool = BandPool::get();
+    if (pool.parts() <= 1 || n < 64) { work(0, n); return; }
+    pool.run(n, work);
 }
 
 void softenRender(const uint32_t* src, int w, int h, float amount, std::vector<uint32_t>& out) {
