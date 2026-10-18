@@ -836,6 +836,20 @@ void GX4000::captureRasterCharacter() {
                                ->hsyncBlackEndLag(), crtc->hsyncCutFirstMicrosecond, from, to);
         // §15.1's lead: the black belongs on the character before the one the CRTC
         // raised HSYNC on. Stored where it is drawn, so the renderer stays a renderer.
+        // ACCC §16.2.1: while V26 runs the GATE ARRAY's output is black, on whatever
+        // monitor line the beam is drawing, and from the character it starts on. The
+        // record's own gateArrayBlank flag only covers lines that open blanked; a VSYNC
+        // that starts part-way through a monitor line (a line whose HSYNC never came, so
+        // the beam runs on into the next CRTC lines) blacks only the rest of it. MEASURED
+        // on SHAKER DT/B1 (R2 moved off the line, then R0=1 lines under a VSYNC): the real
+        // CPC and AmSpiriT 2.0 show one solid black line there; ours showed only the
+        // dashes of those lines' R3=1 HSYNCs.
+        if (crtc->gateArrayBlanking) { from = 0; to = 16; }
+        // ...and the record's own flag means blanked from end to end: a record the
+        // blanking leaves part-way (V26 counts HSYNC ends, and R0=1 lines make one every
+        // 2 µsec) keeps only these per-character windows. DT/B1 again: the record after
+        // the solid line was painted black whole, a second line neither reference has.
+        else line->gateArrayBlank = false;
         int at = (character - crtc->behaviour->hsyncBlackCharacterLead()) & 0xff;
         line->hsyncBlackFrom[at] = (uint8_t)from;
         line->hsyncBlackTo[at] = (uint8_t)to;
@@ -853,6 +867,23 @@ void GX4000::captureRasterCharacter() {
         // it, so the legacy path can decode the character a mid-line mode change lands in
         // with both modes instead of only the new one.
         seg.modeBefore = gateArray->modeBefore; seg.modeSwitchPixel = gateArray->modeSwitchPixel;
+        // ACCC §9.3.4.2 (p.56, the R3.JIT rows) and §9.3.4.1: an HSYNC stopped early by an
+        // R3 write takes the mode where its colourless zone ends; one Pixel-M2 is still
+        // "displayed in the previous graphics mode", and the new mode follows, with no
+        // strip of the old one between. That end is drawn on the character before the
+        // one it was captured on (§15.1's lead, hsyncBlackFrom/To above), so the switch
+        // goes there too, at the Pixel-M2 after the black's end: the chip's
+        // modeSwitchPixelInByte for an OUTI's R3.NJIT, its R3.JIT black end + 1 (in the
+        // second byte) for a JIT. MEASURED on SHAKER BI/C, D, G, H against AmSpiriT 2.0
+        // on CRTC 0, 1 and 2: ours kept the old mode one whole character (16 Pixel-M2)
+        // past the black, then switched.
+        if (gateArray->modeLatchBackSwitch >= 0) {
+            const int switchPixel = gateArray->modeLatchBackSwitch;
+            gateArray->modeLatchBackSwitch = -1;
+            const int back = (character - crtc->behaviour->hsyncBlackCharacterLead()) & 0xff;
+            const int previous = line->segments.empty() ? -1 : line->segments.back().character;
+            if (back > previous) { seg.character = back; seg.modeSwitchPixel = switchPixel; }
+        }
         // Only one renderer consumes the split. The beam path clears it in
         // plotBeamCharacter, so taking it here as well would leave that path with
         // nothing to split on.
@@ -881,6 +912,7 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     // ACCC §9.3.4: the Pixel-M2 at which the GA switches graphic mode is a property
     // of the CRTC it is paired with, so it travels with the chip profile.
     gateArray->modeSwitchPixelInByte = crtc->behaviour->modeSwitchPixelInByte();
+    gateArray->jitModeSwitchPixel = crtc->behaviour->hsyncBlackEndPixelJit() + 1;
     memory->setRamSize(selectedRam);
     const int ownRam = options.internalRamKiB >= 0 ? options.internalRamKiB : (plusComputer && selectedRam >= 128 ? 128 : 64);
     memory->internalPages = ownRam >= 128 ? 1 : 0;
@@ -901,6 +933,7 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
                      : options.crtcType == 4 ? gateArrayModel40226()
                      : gateArrayModel40010();
     gateArray->modeSwitchPixelInByte = crtc->behaviour->modeSwitchPixelInByte();   // ACCC §9.3.4
+    gateArray->jitModeSwitchPixel = crtc->behaviour->hsyncBlackEndPixelJit() + 1;
     crtc->hostOwnsScanlineIndex = true;   // the monitor owns the capture index
     memory->setRamSize(selectedRam);
     memory->loadCartridge({}); memory->setLowerRom(options.lowerRom);

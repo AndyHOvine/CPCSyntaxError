@@ -110,6 +110,17 @@ void GateArray::onHsyncStart(int hsyncWidth, int hsyncDelay, bool betweenCharact
     // whether the monitor saw one sync or two.
     if (hsyncPinFallIn > 0) endCHsync();
     hsyncPinFallIn = -1;
+    // ACCC §16.2.2: SIG_GA_HSYNC is "active ... if R3l>=2": it rises at H06==2 only
+    // while the CRTC's HSYNC is still on. An HSYNC that ends sooner still restarts H06
+    // (§16.2.3), and its pin falls before the rise; clockPixel then inhibits the rise
+    // (cHsyncInhibited). It is decided on the pin, not on R3 at the start, because R3 can
+    // be rewritten during the pulse (SHAKER DH/B2 moves it between 1 and 6 on C0=R2 and
+    // C0=R2+R3+1). Without it the rise fired anyway and nothing ended it before H06==6: a
+    // full 4 usec monitor sync, 2 usec after every R3l=1 HSYNC. MEASURED on SHAKER AR,
+    // whose second zone puts two R3l=1 HSYNCs in each line: the monitor took a 3 Pixel-M2
+    // jolt on the zone's first line and walked back over three (sweep phase 13/14/15), the
+    // bend at the zone join the real CPC and AmSpiriT 2.0 do not have.
+    cHsyncInhibited = false;
     cblackHsync = true;
     // ACCC §14.3 (p.133): "WHEN THE GATE ARRAY RECEIVES A HSYNC SIGNAL FROM THE CRTC, IT
     // DISPLAYS BLACK COLOR FOR 2 usec (approximately because it is possible to reduce this
@@ -172,7 +183,10 @@ void GateArray::onHsyncStoppedByJit(int elapsedUsec) {
     // microsecond the programmed R3 would have reached.
     if (modeLatchDelay <= 0) return;                  // already taken, or never armed
     modeLatchDelay = 0; modeLatchJustArmed = false;
-    if (elapsedUsec >= 3) latchMode(modeSwitchPixelInByte);
+    if (elapsedUsec >= 3) {
+        latchMode(modeSwitchPixelInByte);
+        if (modeSwitchPixel >= 0) modeLatchBackSwitch = jitModeSwitchPixel;
+    }
 }
 
 // ACCC §14.5.4 Note 1: an HSYNC the CRTC withdrew on its first microsecond, before any
@@ -196,7 +210,10 @@ void GateArray::cancelHsyncStart() {
 void GateArray::onHsyncCutShort(int elapsedUsec) {
     if (modeLatchDelay <= 0) return;
     modeLatchDelay = 0; modeLatchJustArmed = false;
-    if (elapsedUsec >= 2) latchMode(modeSwitchPixelInByte);
+    if (elapsedUsec >= 2) {
+        latchMode(modeSwitchPixelInByte);
+        if (modeSwitchPixel >= 0) modeLatchBackSwitch = modeSwitchPixelInByte;
+    }
 }
 
 // ACCC §16.2.2 (p.165): this chip runs at 16 MHz and clocks the CRTC down to one
@@ -204,7 +221,7 @@ void GateArray::onHsyncCutShort(int elapsedUsec) {
 // the chapter puts them rather than on the CRTC's character grid.
 void GateArray::clockPixel() {
     h06Pixels += 1;
-    if (h06Pixels == CHSYNC_RISE_PIXELS) { sigGaHsync = true; cHsyncStarted = true; }
+    if (h06Pixels == CHSYNC_RISE_PIXELS && !cHsyncInhibited) { sigGaHsync = true; cHsyncStarted = true; }
     else if (h06Pixels == CHSYNC_FALL_PIXELS) endCHsync();
 
     // §16.2.2's other end condition, reached first whenever R3l < 6: the CRTC's HSYNC
@@ -212,7 +229,17 @@ void GateArray::clockPixel() {
     // its end, by §14.4's per-chip residue.
     if (hsyncPinFallIn > 0) {
         hsyncPinFallIn -= 1;
-        if (hsyncPinFallIn == 0) { hsyncPinFallIn = -1; endCHsync(); }
+        if (hsyncPinFallIn == 0) {
+            hsyncPinFallIn = -1;
+            // Fell before the rise. CPC GATE ARRAY only: p.134's C-HSYNC table covers CRTC 0, 1
+            // and 2, and the Plus ASIC measures the other way. With the inhibit on CRTC 3, its
+            // DH/A2-A8 lost syncs AmSpiriT 2.0 shows (11.07 -> 11.49, a magenta line under the
+            // digits); they are HSYNCs started with R3l=1. And the real CRTC 3 AR photos
+            // show the strong shear that the extra syncs make. CRTC 0/1/2: DH unchanged to the
+            // second decimal, AR better on every screen.
+            if (!plusHardware && !sigGaHsync && h06Pixels < CHSYNC_RISE_PIXELS) cHsyncInhibited = true;
+            endCHsync();
+        }
     }
     if (pixelSink) pixelSink(pixelSinkContext);
     if (onPixel) onPixel();

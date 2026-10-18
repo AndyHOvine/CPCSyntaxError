@@ -190,6 +190,25 @@ inline int monitorPhaseTaper(int pull, int distance16, bool early = false) {
     return (pull * (window - distance16) + span / 2) / span;
 }
 inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
+// THE LINE SYNC'S OWN PULL (branch 'l'), measured on SHAKER D7 ("R2 OSCILLATION STORY"):
+// R2 alternates between two values on alternate lines over a band, so the line sync moves
+// 1, 2, 3 or 4 characters every other line. The real CTM photographs (CRTC 0, A1-A5 and
+// B1-B5) show the band settled at the MEAN of the two sync positions (2E/30 under a 2E
+// frame one character left, 2E/30 under a 2F frame not moved, 2E/32 under a 30 frame not
+// moved) within about one text row, with a small zig-zag on alternate lines that grows
+// with the swing. That is a LINEAR phase detector: a pull of a fixed fraction of the error
+// on every line. The old pull was 1 or 3 Pixel-M2 by the sign of the error; it settles
+// where both lines pull the full 3, about 6 Pixel-M2 from the early sync, and never at the
+// mean. 1/4 a line: the step reaches 90 % in 8 lines, which is one text row on two sets of
+// photographs: D7/A2's band is over in its second row, and D3's band (the sweep pushed 49
+// Pixel-M2 by the second sync) is back in place one row after it ends. A +-a swing leaves
+// alternate lines a*2/7 apart (5 Pixel-M2 on A2). 1/8 took two to three rows on D3.
+inline constexpr int MONITOR_LINE_PULL_DIV = 4;
+// Beyond this the detector is out of its linear range and the sweep re-locks on the line
+// (the old snap). Half the CTM's 12 usec flyback sawtooth (docs: CM14 TP9), 6 usec. D7/A5
+// swings 4 characters (64 Pixel-M2) every line and the photograph shows it averaged, not
+// re-locked line by line; the old threshold was one character.
+inline constexpr int MONITOR_RELOCK16 = 6 * 16;
 
 class CtmMonitor {
 public:
@@ -305,6 +324,7 @@ public:
     bool widthSlotPend = false;                                         // ...in pend*, else cur*
     bool tipInWindow = false;                                           // hsyncMatch set inside it
     int preCurN = 0, prePendN = 0;                                      // undo for a too-short tip
+    bool preTipInWindow = false;                                        // ...and its window flag
     // THE LINE PERIOD, MEASURED BETWEEN LINE SYNCS. It used to be counted by sinceLastSync,
     // reset only when a gap happened to land inside the acceptance window -- and at the end
     // of every vertical pulse §16.2.2's XNOR flips the pin's polarity, one gap lands outside

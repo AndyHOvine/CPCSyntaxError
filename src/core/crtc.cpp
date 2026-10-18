@@ -759,9 +759,20 @@ void CRTC6845::startVsyncIfNeeded(bool liveWrite) {
             // §19.7.3's R7=0 rule -- the VSYNC decided before ParityFrame switches -- is the
             // frame-start VSYNC's alone (midVsyncParity, set in newFrame). An R7 moved later
             // in that frame to a C4 still to come uses the frame's own parity.
-            const int midParity = (registers[7] & 0x7f) == 0 ? midVsyncParity : (interlaceField & 1);
-            if (!liveWrite && (displayMode() & 1) != 0 && midParity == 0
-                && (registers[0] >> 1) != 0) {
+            // A WRITE that makes R7=0 true later in the frame is a new comparison, not the
+            // frame-start one, so it takes the frame's live parity like any other R7 value.
+            // MEASURED on SHAKER CO/F (CRTC 1): with midVsyncParity there the R7=0 rows read
+            // #0050 on alternate frames where the real chip prints #0060 on all four.
+            const int midParity = ((registers[7] & 0x7f) == 0 && !liveWrite) ? midVsyncParity
+                                                                             : (interlaceField & 1);
+            // ...and an R7 write that makes C4=R7 true is under the same rule (§19.7.1:
+            // "When the state of MID-VSYNC is active, then the VSYNC only triggers when C0
+            // reaches R0/2"), as long as it lands before C0=R0/2. MEASURED on SHAKER CO/F
+            // (CRTC 1, R8=3, R7=0 written at C0~10-26 of the frame's second line): the
+            // program's 16 usec poll reads "CPU TO VSYNC=#0050" where the real CRTC 1 prints
+            // #0060: ours rose at the write, the chip at C0=32.
+            if ((displayMode() & 1) != 0 && midParity == 0 && (registers[0] >> 1) != 0
+                && (!liveWrite || horizontal < (registers[0] >> 1))) {
                 vsyncHalfLinePending = true;
                 return;
             }
@@ -968,8 +979,18 @@ bool CRTC6845::updateVerticalType1() {
         behaviour->updateRasterParity(*this);
         raster = baseRaster();
         if (registers[9] != 0) r9Match = false;
+        // The C4=R4 latch is cleared on entry whatever R4 holds; the per-line C4==R4 test
+        // below sets it again only if C4 still equals R4. It used to stay set when R4=0,
+        // although C4 had just stepped to 1 (ACCC §11.2.4 p.85: "C4 is incremented without
+        // taking R4 into account"), so every C9 wrap re-entered here and restarted the R5
+        // count: the frame never ended. MEASURED on SHAKER DE/D-F (CRTC 1: R4=0 and R5=8
+        // written on the frame's first line): the real CRTC 1 ends the frame after the 8
+        // lines and prints "OFFSET CORRECTLY MANAGED IN ADDITIONAL LINES! WELL DONE"; ours
+        // showed a blank screen and "NO NO NO ...". Re-entry on a REAL C4==R4 stays: it is
+        // what ends SHAKER CE's R5=0 deadlock when C4 comes round to R4 (CE/A prints every
+        // "CPU TO NEW FRAME" value as expected with it, and goes black without it).
         if (r4Match) {
-            if (registers[4] != 0) r4Match = false;
+            r4Match = false;
             verticalAdjustActive = true;
             // ACCC §11.2.4 (p.85): "If C4=0 BEFORE the additional management, then VMA
             // is updated with R12/R13 and not VMA', and this as long as C4=1." Recorded
@@ -1238,8 +1259,17 @@ bool CRTC6845::updateVerticalGeneral() {
                     }
                 } else {
                     if (behaviour->incrementsVerticalOnAdjustEntry()
-                        && (!behaviour->adjustEntryStepNeedsRasterMatch() || rasterMatchesMaximum()))
+                        && (!behaviour->adjustEntryStepNeedsRasterMatch() || rasterMatchesMaximum())) {
                         vertical = (vertical + 1) & 0x7f;
+                        // ACCC §18.2.2 (CRTC 0, 2): C4=R6 starts the BORDER at once, and
+                        // "this is also true during the C4 character(s) generated during a
+                        // vertical adjustment" (§11.7 the same). This step was the one C4
+                        // step without the test. MEASURED on SHAKER BRETURN A4/B4/C4 (R4=10,
+                        // R6=#0B): the adjust lines ran at C4=11 with the display on, and the
+                        // characters showed through the orange adjust bar that the CRTC 0
+                        // and 2 photos show as BORDER only.
+                        if (vertical == registers[6]) vDisplay = false;
+                    }
                     raster = behaviour->additionalLinesCountFromZero() ? 0 : baseRaster();
                 }
             }
@@ -1381,6 +1411,7 @@ void CRTC6845::updateVertical() {
     // lines exactly that way.
     // ACCC §15.5.2: on CRTC 2 a HSYNC on that C0=0 skips the restore.
     if (!newFrameStarted && vertical == 0 && raster == baseRaster()
+        && behaviour->restoresDisplayOnRunawayWrap()
         && !(behaviour->skipsFrameDisplayRestoreDuringHsync() && hsyncReachesLineStart())) {
         vDisplay = behaviour->initialVerticalDisplay(*this);
     }

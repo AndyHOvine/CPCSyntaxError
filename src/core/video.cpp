@@ -869,6 +869,11 @@ void CpcVideo::render() {
                 }
                 if (state && !(state->displayEnabled[character] & 1 << (column & 1))) continue;
                 int mode = pixelState.present ? pixelState.mode : ga().mode;
+                // modeSwitchPixel 8..15: the switch is in the character's SECOND byte (an
+                // R3.JIT, see the capture), so its first byte is still the old mode whole.
+                const bool switchInSecondByte = pixelState.present && pixelState.modeSwitchPixel >= 8
+                    && character == pixelState.splitCharacter;
+                if (switchInSecondByte && (column & 1) == 0) mode = pixelState.modeBefore;
                 int byte = state ? state->videoBytes[sourceColumn] : memory->readVideo(lineBase + sourceColumn);
                 // §9.2.2, above: on the character a segment starts on, the pixels before
                 // the chip's ink instant are still drawn in the OLD ink. inkSplit is that
@@ -891,14 +896,15 @@ void CpcVideo::render() {
                 // way across, which showed up as the wrong colour on the leading pixels of
                 // the first letter.
                 const bool modeSplitHere = pixelState.modeSwitchPixel >= 0
-                    && character == pixelState.splitCharacter && (column & 1) == 0;
+                    && character == pixelState.splitCharacter
+                    && (column & 1) == (switchInSecondByte ? 1 : 0);
                 // A mode split and an ink split land on the same byte -- both belong to
                 // the character the segment starts on -- so they are decoded together:
                 // the pens come from the mode, the ink from §9.2.2's instant.
                 if (modeSplitHere || (inkSplit > 0 && inkSplit < 8)) {
                     int pens[8];
                     if (modeSplitHere) {
-                        int switchPixel = pixelState.modeSwitchPixel;
+                        int switchPixel = pixelState.modeSwitchPixel & 7;
                         // §9.3.4.3: the instant is one index earlier when the outgoing mode
                         // is not 2, "since the MODE 2 pixels are 'ahead' of the pixels of
                         // the other modes" -- the same shift the beam path applies.
@@ -906,8 +912,20 @@ void CpcVideo::render() {
                         bytePens(byte, pixelState.modeBefore, mode, switchPixel, pens);
                     } else bytePens(byte, mode, mode, -1, pens);
                     // §9.2.1: each Pixel-M2 sits where its own mode puts it.
-                    const int switchAt = !modeSplitHere ? 0 : pixelState.modeSwitchPixel
-                        - (pixelState.modeSwitchPixel > 0 && pixelState.modeBefore != 2 ? 1 : 0);
+                    const int splitPixel = pixelState.modeSwitchPixel & 7;
+                    const int switchAt = !modeSplitHere ? 0 : splitPixel
+                        - (splitPixel > 0 && pixelState.modeBefore != 2 ? 1 : 0);
+                    // §9.2.1: mode 2 is drawn one Pixel-M2 ahead of the other modes, so a
+                    // switch out of mode 2 leaves the Pixel-M2 at the switch uncovered:
+                    // the old mode's pixels end on it and the new mode's start one after.
+                    // The new mode's pixel there is as wide as its others (4 Pixel-M2 in
+                    // mode 0), so it covers that one too. Left alone it was a 1-Pixel-M2
+                    // black line at every such split (SHAKER BI/C-H: AmSpiriT 2.0 has the
+                    // new mode's colour there).
+                    if (modeSplitHere && switchAt > 0 && switchAt < 8
+                        && pixelState.modeBefore == 2 && mode != 2)
+                        drawScaledPixel(column * 8 + switchAt + gaModeOffset(2), y,
+                                        penColor(pens[switchAt], inkAt(switchAt)), 1, 0);
                     for (int pixel = 0; pixel < 8; pixel += 1) {
                         const int shift = gaModeOffset(pixel < switchAt ? pixelState.modeBefore : mode);
                         drawScaledPixel(column * 8 + pixel + shift, y, penColor(pens[pixel], inkAt(pixel)), 1, 0);

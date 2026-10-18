@@ -187,9 +187,18 @@ void CtmMonitor::decide() {
         return;
     }
     afcCharge = 0;                              // the band is over; the lock takes it back
-    if (pendStable > 0) {
-        decisionBranch = 'l';                   // locked: gentle pull, or a re-lock snap
-        const int phase = pendPhase;
+    // A line sync that arrives AFTER the flyback, inside this window, is the line's sync
+    // just as much as one before it, only late. It used to fall through to the coast
+    // ('n'): the window recorded it and nothing read it, so the sweep followed a sync that
+    // moved EARLY and never one that moved LATE. On SHAKER D7 (R2 alternating 2E/2F line by
+    // line) every second line coasted and the band stayed on the early sync, where the real
+    // CTM puts it on the mean of the two (MONITOR_LINE_PULL_DIV).
+    const bool lateLineSync = pendStable <= 0 && pendN >= 1 && pendErr[best] > 0
+                              && pendErr[best] <= MONITOR_RELOCK16;
+    if (pendStable > 0 || lateLineSync) {
+        decisionBranch = 'l';                   // locked: linear pull, or a re-lock snap
+        const int phase = lateLineSync ? pendErr[best] : pendPhase;
+        decisionPhase = phase;
         // A horizontal AFC has a PULL-IN RANGE, and outside it the sweep does not crawl:
         // it re-locks. Inside a character the loop is the gentle one it always was, a
         // Pixel-M2 or three or five a line, because that is the filter that keeps a noisy
@@ -205,10 +214,14 @@ void CtmMonitor::decide() {
         // 18, 18, 18, 19, 19, 19, 19, 19, 19, 20 where every one of them belongs at 20:
         // a staircase three characters deep under the scoreboard, which is exactly what
         // the picture showed.
+        // (The snap used to come beyond ONE character; MONITOR_RELOCK16 says why it is the
+        // detector's range now.)
         const int step = phase < 0 ? -phase : phase;
-        if (step > 16 && !holdOutOfRange) { hsyncCount -= phase; lineSnap16 -= phase; }   // re-lock, this line too
-        else if (phase < 0) hsyncCount += phase < -5 ? 3 : 1;
-        else if (phase > 0) hsyncCount -= phase > 5 ? 3 : 1;
+        if (step > MONITOR_RELOCK16 && !holdOutOfRange) { hsyncCount -= phase; lineSnap16 -= phase; }   // re-lock, this line too
+        else if (step != 0) {
+            const int pull = std::max(1, (step + MONITOR_LINE_PULL_DIV / 2) / MONITOR_LINE_PULL_DIV);
+            hsyncCount += phase < 0 ? pull : -pull;
+        }
     // Out of lock: pull 5 Pixel-M2 a line, and ALWAYS THE SAME WAY. That looks like a
     // sign bug and is not one -- MEASURED, 2026-09-21, do not "fix" it again. pendPhase on
     // the screens that reach this branch runs about -700 on a 1024 Pixel-M2 line, i.e.
@@ -405,6 +418,13 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
             hsyncMatch = preTipMatch;
             // ...and the discriminator never saw it either.
             curN = preCurN; pendN = prePendN;
+            // ...nor the window flag: decide() carries hsyncMatch along by the flyback's
+            // offset when a tip set it inside the window, so a too-short tip that left it
+            // set shifted the lock it had just been taken back from. MEASURED on SHAKER AR
+            // (two R3l=2 HSYNCs a line, 2-Pixel-M2 tips, in its colour zone only): the
+            // first lines after that zone bent 6-12 Pixel-M2 while the lock walked back,
+            // where the real CPC and AmSpiriT 2.0 join the zones straight.
+            tipInWindow = preTipInWindow;
         }
         if (widthSlot >= 0 && pulseWidth > 0) {
             (widthSlotPend ? pendWid : curWid)[widthSlot] = pulseWidth;
@@ -419,7 +439,7 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
         preTipMatch = hsyncMatch;
         tipStartAt = pixelClock;
         tipRetriggered = true;
-        preCurN = curN; prePendN = pendN;
+        preCurN = curN; prePendN = pendN; preTipInWindow = tipInWindow;
         // A tip inside the last flyback's deferred window belongs to THAT decision, late
         // by pendSince; any other belongs to the next flyback, early by however far it
         // still has to run.

@@ -60,6 +60,12 @@ public:
     // new mode takes over (-1 = none pending); modeBefore is the mode the earlier
     // pixels of that byte were decoded in.
     int modeSwitchPixel = -1, modeBefore = 0;
+    // An HSYNC stopped early by an R3 write (R3.JIT, or an OUTI's R3.NJIT) takes the mode
+    // there and then (§9.3.4.1). The capture then puts the switch on the character where
+    // the HSYNC black ends, at this Pixel-M2 of that character (0..15, so 8..15 is its
+    // second byte); -1 = no such switch pending.
+    int modeLatchBackSwitch = -1;
+    int jitModeSwitchPixel = 9;   // the chip's R3.JIT black end + 1 (emulator sets it)
     int romConfig = 0;                     // the RMR byte as last written
     void latchMode(int switchPixel = -1);
 
@@ -173,6 +179,7 @@ public:
             && (hsyncPinFallIn <= 0 || hsyncPinFallIn > PIXELS_PER_CHARACTER);
     }
     int h06Pixels = 0;                  // Pixel-M2 since HSYNC-CRTC rose
+    bool cHsyncInhibited = false;       // the CRTC pin fell before H06 reached the rise (§16.2.2)
     long tipTraceBudget = 0;            // diagnostic: log this many C-HSYNC ends
     // §16.2.2: C-HSYNC "becomes active ... before the end of the 2 µs if R3l>=2" and
     // inactive "if the duration of C-HSYNC has reached 4 µsec". 2 µsec and 6 µsec from

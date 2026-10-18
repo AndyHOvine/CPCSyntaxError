@@ -337,6 +337,11 @@ struct CrtcType0 : CrtcBehaviour {
     // on Pixel-M2 4 to 7. SHAKER BI/A draws that thin column (AmSpiriT 4 Pixel-M2); ours
     // withheld the HSYNC and drew nothing.
     int r3ZeroFirstMicrosecondBlackEndPixel() const override { return 8; }
+    // ACCC §9.3.4.4 (p.65): after an R3.JIT the HSYNC on CRTC 0 "ceases after the last
+    // black Pixel-M2". MEASURED on SHAKER BI/C against AmSpiriT 2.0 (the ACCC author's
+    // own implementation): the black ends on Pixel-M2 310 there and on 309 here with
+    // the default 7, one short.
+    int hsyncBlackEndPixelJit() const override { return 8; }
     bool adjustEntryStepNeedsRasterMatch() const override { return true; }                       // §13.2.1
     bool incrementsVerticalEachAdjustLine() const override { return false; }   // §13.2.4
     bool adjustmentCountsRasterToR5() const override { return true; }          // §11.2.2

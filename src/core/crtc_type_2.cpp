@@ -93,7 +93,9 @@ struct CrtcType2 : CrtcBehaviour {
     int hsyncBlackStartPixelJit() const override { return 7; }     // ACCC §14.7.1 (8th)
     // ACCC §9.3.4.4 (p.65): "On CRTC 2, the HSYNC stops on the last Pixel-M2 of the
     // HSYNC and allows the visualization of an additional pixel."
-    int hsyncBlackEndPixelJit() const override { return 6; }
+    // MEASURED on SHAKER BI/C against AmSpiriT 2.0: the black ends on Pixel-M2 310,
+    // as on CRTC 0, and the additional pixel follows it; 6 ended it two short (308).
+    int hsyncBlackEndPixelJit() const override { return 8; }
     int displayRestorePixelAfterHsync() const override { return 0; }   // ACCC §16.2.2
     bool considersVsyncAtAnyRaster() const override { return true; }   // ACCC §16.4.3
     bool usesLastFrameLineLatch() const override { return true; }     // ACCC §10.3.3
@@ -305,6 +307,14 @@ struct CrtcType2 : CrtcBehaviour {
     int hsyncFallPhase16(int) const override { return 2; }
     bool frameAddressComesFromVmaPrime() const override { return true; }   // ACCC §13.4
     bool skipsFrameDisplayRestoreDuringHsync() const override { return true; }     // §15.5.2
+    // ACCC §16.4.3 (p.171): "if the HSYNC overflows on C0=0, then C4 overflows on the
+    // last line of the frame AND THE BORDER REMAINS ACTIVATED"; §15.5.2 restores the
+    // display at C0=0 only "if C4 has never reached R6"; §18.2.2 (CRTC 0, 2): the R6
+    // BORDER holds "until the next frame". A runaway C4 wrapping through 0 is not a new
+    // frame. MEASURED on SHAKER B4/F-H (R0=3, R4=0, HSYNC on C0=0 of C9=7, so C4 runs
+    // away): ours restored the display on every wrap and drew RAM where the real CRTC 2
+    // and AmSpiriT show BORDER only (the caption: "SCREEN KO ON REAL CRTC 2").
+    bool restoresDisplayOnRunawayWrap() const override { return false; }
     bool assignsVmaPrimeBeforeVma() const override { return true; }                // §17.4.3
     // ACCC §19.8.3 (p.227): "The specific management of assignment of VMA' with VMA when
     // C0==R1 is only processed when R8 is equal to 3. When R8 is equal to 0 or 2, this

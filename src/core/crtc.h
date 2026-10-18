@@ -368,6 +368,9 @@ struct CrtcBehaviour {
     // round to 0 under a HSYNC that forbids the restore -- "the display is off"; with
     // R3=14 the HSYNC ends on C0=0 and "the display is on".
     virtual bool skipsFrameDisplayRestoreDuringHsync() const { return false; }
+    // Does a C4 that ran away past R4 restore the display when it wraps from 127 to 0
+    // (C4=C9=C0=0 with no new frame)? The default is yes (§18.2.1, CRTC 1's SHAKER A3).
+    virtual bool restoresDisplayOnRunawayWrap() const { return true; }
     // ACCC §16.4.1: a VSYNC triggered mid-line by an R7 write does not consume that
     // partial line on CRTC 0, so the VSYNC runs one line longer than on CRTC 1 and 2.
     virtual bool midLineVsyncAddsALine() const { return false; }
