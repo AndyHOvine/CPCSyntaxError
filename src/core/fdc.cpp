@@ -82,7 +82,7 @@ long long UPD765A::headReadyAt() {
 void UPD765A::reset() {
     std::array<std::shared_ptr<Disk>, 4> mountedDrives = drives;
     phase = IDLE; command = 0; params.clear(); result.clear();
-    transfer.clear(); transferIndex = 0; motor = false; motorSince = -1;
+    transfer.clear(); transferIndex = 0; motor = false; motorSince = -1; motorOffAt = -1;
     machineSounds.motor(false);
     transferRefs.clear(); formatting = false; formatTrack.reset();
     outcome = Outcome{}; scanCondition = 0; resultAt = -1;
@@ -132,9 +132,17 @@ void UPD765A::eject(int unit) {
 }
 void UPD765A::setMotor(int value) {
     bool nextMotor = !!(value & 1);
+    if (traceFdc() && nextMotor != motor) std::fprintf(stderr, "FDC  %9lld motor %s\n", now, nextMotor ? "on" : "off");
     if (nextMotor != motor) machineSounds.motor(nextMotor);
-    if (nextMotor && !motor) motorSince = now;
-    if (!nextMotor) motorSince = -1;
+    // A disc does not stop the moment the motor bit goes off: it keeps turning for a while.
+    // READY drops with the motor (MAME and CPCEC agree), but a motor switched back on within
+    // a revolution finds the disc still at speed, and READY comes back without two new turns.
+    // phX switches the motor off and on again 4.9 ms apart and recalibrates 29 ms later:
+    // asking two new revolutions of it ended that recalibrate Not Ready (ST0 &68) and the
+    // loader waited for ever.
+    if (nextMotor && !motor && !(motorSince >= 0 && motorOffAt >= 0 && now - motorOffAt < REVOLUTION_US))
+        motorSince = now;
+    if (!nextMotor && motor) motorOffAt = now;
     motor = nextMotor;
 }
 // READY: a disc, turning, the index seen twice since the motor came on (MAME's floppy.cpp).
@@ -144,7 +152,9 @@ int UPD765A::lastTrack(int drive) const {
 }
 bool UPD765A::ready(int drive) const {
     const size_t d = (size_t)(drive & 1);
-    return drives[d] && motorSince >= 0 && now - std::max(motorSince, insertedAt[d]) >= 2 * REVOLUTION_US;
+    if (!drives[d] || motorSince < 0) return false;
+    if (!motor) return false;
+    return now - std::max(motorSince, insertedAt[d]) >= 2 * REVOLUTION_US;
 }
 
 void UPD765A::advanceCycles(int cycles) {

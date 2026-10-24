@@ -382,7 +382,15 @@ struct CrtcType1 : CrtcBehaviour {
         // AND C9==R9 IN POSITION C0==R0, AND R4 OR R9 IS MODIFIED IN THIS POSITION,
         // THEN THE ADDITIONAL MANAGEMENT REMAINS TRUE." So on that one position a
         // write cannot take back a match that already held.
-        if (crtc.horizontal == crtc.registers[0] && crtc.r4Match && crtc.r9Match) {
+        // ...an ADDITIONAL-management rule: §11.2.4 is "while additional lines are programmed"
+        // (R5, or the interlace line, which "is counted as if this line had been added to R5").
+        // With none, there is no additional management to keep, and the R4/R9 write on C0=R0
+        // decides the frame end like any other. SHAKER AU/A ("UPD R4=0 WHEN C4=1 & C9=7 (UPD
+        // FROM C0vsio)", R5=0, R8=0) prints C4 overflow (00) for the write on C0vsio=#3F on the
+        // real CRTC 1 and AmSpiriT 2.0; this early return made it 01 (C4=0).
+        const bool additionalLines = (crtc.registers[5] & 0x1f) != 0
+            || ((crtc.displayMode() & 1) != 0 && addsInterlaceLine(crtc));
+        if (crtc.horizontal == crtc.registers[0] && crtc.r4Match && crtc.r9Match && additionalLines) {
             // "However, if R4 was modified to C0==R0 with R4>0, then VMA is not updated
             // with R12/R13 when C4=1." The R9 form of the same write does not block it:
             // "if R9 is modified to C0==R0 when C4==R4=0, then VMA continues to be

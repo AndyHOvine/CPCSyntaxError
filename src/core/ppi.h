@@ -14,6 +14,7 @@ public:
     std::function<bool()> vsyncProvider;
     CPCTapeDrive* tape;
     bool strictPlusBus;
+    bool cassetteIdleHigh = false;   // no deck on this machine: port B bit 7 floats high
     bool plusMode = true;
     bool printerOnline = false;
     int printerBusyCycles = 0;

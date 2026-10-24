@@ -133,6 +133,12 @@ GX4000::GX4000() {
         // not here, where only the CRTC's pin has moved.
         if (plusHardware != false) asic->onHsyncStart(ay, rasterLine, hsyncWidth);
     };
+    // ACCC §14.5.3: the CRTC 3/4 HSYNC end that onHsync deferred by the ASIC's lag did not
+    // happen in the chip, so neither the C-HSYNC fall nor the R52 step reaches the ASIC.
+    o.onHsyncEndRevoked = [this]() {
+        gateArrayHsyncPending = 0;
+        gateArray->revokeCHsyncFall();
+    };
     o.onHsyncCancelled = [this]() {
         gateArray->cancelHsyncStart();
         crtc->gateArrayBlanking = gateArray->blanking();
@@ -916,6 +922,10 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     memory->setRamSize(selectedRam);
     const int ownRam = options.internalRamKiB >= 0 ? options.internalRamKiB : (plusComputer && selectedRam >= 128 ? 128 : 64);
     memory->internalPages = ownRam >= 128 ? 1 : 0;
+    // The 6128 Plus has no cassette deck: nothing drives PPI port B bit 7, and it reads 1.
+    // SHAKER AI on the real 6128 Plus prints #DE/#DF where a classic 6128 (and our deck,
+    // idle) gives #5E/#5F. The 464 Plus has its deck and keeps the deck's level.
+    ppi->cassetteIdleHigh = plusComputer && ownRam >= 128;
     memory->classicExpansion = options.classicExpansion;
     memory->loadCartridge(cart.banks); cartridge = std::make_shared<Cartridge>(cart); reset();
 }
@@ -924,7 +934,7 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
     memory->clearSnapshotRoms(); snapshotDebugMetadata.reset();
     int selectedRam = options.ramKiB >= 0 ? options.ramKiB : (options.ram128 ? 128 : 64);
     plusComputer = false; plusHardware = false; gateArray->setPlusHardware(false); ramExpansion = selectedRam > 64; ramKiB = selectedRam; model = options.model;
-    crtc->setType(options.crtcType); ppi->setPlusMode(false);
+    crtc->setType(options.crtcType); ppi->setPlusMode(false); ppi->cassetteIdleHigh = false;
     // ACCC §9 (p.44): on a classic CPC the GATE ARRAY is its own chip and which of the
     // three is fitted is a property of the machine -- the 40010 is what most 6128's
     // carry, so it is the default. The 40226 and the 40489 are not separate chips at
@@ -1276,7 +1286,11 @@ int GX4000::stepInstruction() {
     // no idle tail, which is why §27.4's 5 microseconds hold as measured.
     r52AcknowledgedThisStep = false;
     bool responseSharesMicrosecond = false;
-    if (plusHardware == false && !cpu->pendingNmi && cpu->pendingInterrupt != -1
+    // ...on the 6128 Plus as well: the same Z80A on the same 1 usec bus, and the same SHAKER
+    // BR/A on the real Plus prints #C4 for DEC HL, LD A,I, LD A,R and CPI exactly as the CPC
+    // does (ours printed #CC: the rule was classic-only). There R52 is acknowledged only for
+    // the ASIC's raster (GATE ARRAY) interrupt, as in the acknowledge callback.
+    if (!cpu->pendingNmi && cpu->pendingInterrupt != -1
         && cpu->iff1 && cpu->eiDelay == 0) {
         static const bool traceSlack = std::getenv("CPCSE_TRACE_ACK") != nullptr;
         if (traceSlack)
@@ -1284,8 +1298,10 @@ int GX4000::stepInstruction() {
                          crtc->horizontal, gateArray->interruptCounter);
         if (lastInstructionSlackT <= 1) advanceHardwareToInstructionOffset(4);
         else responseSharesMicrosecond = true;
-        gateArray->acknowledgeInterrupt();
-        r52AcknowledgedThisStep = true;
+        if (plusHardware == false || asic->rasterInterruptPending) {
+            gateArray->acknowledgeInterrupt();
+            r52AcknowledgedThisStep = true;
+        }
     }
     const int profilePc = cpu->pc & 0xffff, profileSp = cpu->sp & 0xffff;
     const int profileOpcode = profiler ? memory->readMapped(profilePc) : 0;
@@ -1467,7 +1483,7 @@ void GX4000::acknowledgeInterrupt() {
     }
     bool rasterOrGateArray = asic->rasterInterruptPending;
     asic->acknowledgeInterrupt();
-    if (rasterOrGateArray) gateArray->acknowledgeInterrupt();
+    if (rasterOrGateArray && !r52AcknowledgedThisStep) gateArray->acknowledgeInterrupt();
 }
 
 } // namespace cpcse

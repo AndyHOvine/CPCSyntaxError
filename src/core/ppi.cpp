@@ -100,7 +100,7 @@ int PPI8255::read(int port) {
             // Thacker (ArnoldEmu) before me, that this FAKE VSYNC does not work on some
             // CPC's. On other CPC's, the result is incorrect."
             if (!portBInput) return portB;
-            int tapeBit = tape ? tape->getPortBBit() : 0x00;   // no deck, no signal
+            int tapeBit = cassetteIdleHigh ? 0x80 : tape ? tape->getPortBBit() : 0x00;   // no deck, no signal
             int printerBusy = (!printerOnline || printerBusyCycles > 0 || printerManualBusy) ? 0x40 : 0;
             int boardMask = strictPlusBus ? 0x5e : 0x7e;
             return ((boardMask & ~0x40) | printerBusy | (vsyncProvider() ? 1 : 0)) | tapeBit;

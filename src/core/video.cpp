@@ -810,9 +810,20 @@ void CpcVideo::render() {
                              state->monitorDecisionMove, state->monitorDecisionTips);
                 // The mode each segment of the line decodes in (§9.2.1 moves mode 2 by a
                 // Pixel-M2, so which mode a line STARTS in is visible at its left edge).
+                {   // Each slot's C0 ("-" = DISPEN off) and the two bytes fetched in it:
+                    // matched against RAM, they give the address and raster a row really
+                    // showed (SHAKER A7: the raster was one line late on a runaway C9).
+                    std::fprintf(stderr, "ROWC0 %d:", monitorY);
+                    for (int c = 0; c < (int)state->horizontalCounters.size() && c < 64; c++)
+                        std::fprintf(stderr, " %d%s", state->horizontalCounters[c], state->displayEnabled[c] ? "" : "-");
+                    std::fprintf(stderr, "\nROWVB %d:", monitorY);
+                    for (int c = 0; c < 64 && 2 * c + 1 < (int)state->videoBytes.size(); c++)
+                        std::fprintf(stderr, " %02X%02X", state->videoBytes[2 * c], state->videoBytes[2 * c + 1]);
+                    std::fprintf(stderr, "\n");
+                }
                 std::fprintf(stderr, "ROWPULL %d: pull=%d width=%d slow=%d\n", monitorY,
                              state->monitorDecisionPull, state->monitorDecisionWidth, state->monitorDecisionSlow);
-                std::fprintf(stderr, "ROWMODE %d: mode=%d segs=", monitorY, state->mode);
+                std::fprintf(stderr, "ROWMODE %d: frame %d mode=%d segs=", monitorY, state->crtcFrame, state->mode);
                 for (const auto& seg : state->segments)
                     std::fprintf(stderr, "[c%d m%d<-%d@%d] ", seg.character, seg.mode,
                                  seg.modeBefore, seg.modeSwitchPixel);
@@ -951,13 +962,68 @@ void CpcVideo::render() {
         // the raster timing overlay: a tick where each OUT of this line was made, in its colour
         if (drawIoMarks && state && !state->ioMarks.empty()) {
             static const int COLOURS[] = { 0xffff00, 0xff9a00, 0xffffff, 0xff40ff, 0x00e0ff, 0x8080ff, 0x40ff40, 0xff6080, 0xa0a0a0 };
-            for (const RasterLine::IoMark& m : state->ioMarks)
-                drawScaledPixel(m.slot * 16, y, COLOURS[std::min<int>(m.kind, 8)], 3, 0);
+            // Placed now (this line's origin), drawn after the picture is finished: the marks
+            // are the debugger's, not the monitor's, and the chroma filter must not blend them.
+            for (const RasterLine::IoMark& m : state->ioMarks) {
+                const int screenX = (lineOrigin ? lineOrigin->x : origin.x) + m.slot * 16;
+                const int screenY = (linePhysicalY ? *linePhysicalY : (origin.y + y)) * 2 + lineHalfLine;
+                const int clipped = !lineClipRight ? 3 : std::min(3, *lineClipRight - screenX);
+                if (clipped > 0) deferredIoMarks.push_back({ screenX, screenY, COLOURS[std::min<int>(m.kind, 8)], clipped });
+            }
         }
     }
     lineClipRight = std::nullopt; lineOrigin = std::nullopt; linePhysicalY = std::nullopt;
     lineHalfLine = 0;
     renderSprites(frameScroll);
+    if (monitorColourTube) applyChromaBandwidth();
+    for (const auto& m : deferredIoMarks) { setPixel(m[0], m[1], m[2], m[3]); setPixel(m[0], m[1] + 1, m[2], m[3]); }
+    deferredIoMarks.clear();
+}
+
+// THE COLOUR OF A PIXEL IS SPREAD OVER ITS NEIGHBOURS; ITS BRIGHTNESS IS NOT. Each pixel keeps
+// its own luma (BT.601) while its two colour-difference signals are averaged with the pixels
+// round it: V (red - luma) over three pixels, 1/4 1/2 1/4, and U (blue - luma) wider, over five,
+// 9 68 102 68 9 /256. NOT DOCUMENTED (ACCC 1.11 and the RAG library have nothing on it); taken
+// from AmSpiriT 2.0 at the user's request ("the colors should match amspirit"), whose renders the
+// user judged closer to the real CTM photographs. MEASURED, not chosen: a least-squares fit of a
+// luma kernel and separate U and V kernels from our pixels to AmSpiriT's, over 24 CRTC 0 screens
+// with no dither (AO, AP, B4, BI; scratch/fit_yuv2.py), gave luma 1.01 on the pixel itself and
+// nothing round it, V 0.22 0.50 0.21 and U 0.035 0.255 0.377 0.253 0.037 (normalised here).
+// On SHAKER AR the program's pens are blue (0x44) and bright yellow (0x4A) alternating every
+// Pixel-M2: their colour nearly cancels, so the yellow pixels come out pale yellow and the blue
+// ones near black, which is what AmSpiriT draws there; at an ordinary blue/yellow edge the last
+// yellow pixel turns pale and the first blue one dark, as in AmSpiriT too.
+// A colour set only: a monochrome set's picture has no colour to spread.
+void CpcVideo::applyChromaBandwidth() {
+    std::vector<int> u((size_t)width + 4), v((size_t)width + 4);
+    for (int y = 0; y < height; y += 1) {
+        uint32_t* line = pixels.data() + (size_t)y * width;
+        // U and V x 1024 (packedColor: R, G, B in bits 0, 8, 16), edge pixels repeated.
+        for (int x = -2; x < width + 2; x += 1) {
+            const uint32_t c = line[x < 0 ? 0 : x >= width ? width - 1 : x];
+            const int r = c & 0xff, g = (c >> 8) & 0xff, b = (c >> 16) & 0xff;
+            u[(size_t)x + 2] = -151 * r - 296 * g + 446 * b;
+            v[(size_t)x + 2] = 630 * r - 527 * g - 102 * b;
+        }
+        for (int x = 0; x < width; x += 1) {
+            const int* uc = &u[(size_t)x + 2];
+            const int* vc = &v[(size_t)x + 2];
+            const long long du = (9LL * (uc[-2] + uc[2]) + 68LL * (uc[-1] + uc[1]) + 102LL * uc[0]) / 256 - uc[0];
+            const long long dv = (1LL * (vc[-1] + vc[1]) + 2LL * vc[0]) / 4 - vc[0];
+            if (du == 0 && dv == 0) continue;
+            // back through the inverse: R += 1.140 V, G -= 0.395 U + 0.581 V, B += 2.032 U
+            const uint32_t c = line[x];
+            const int add[3] = { (int)((1167 * dv) / (1024 * 1024)),
+                                 (int)((-404 * du - 595 * dv) / (1024 * 1024)),
+                                 (int)((2081 * du) / (1024 * 1024)) };
+            int out[3];
+            for (int k = 0; k < 3; k += 1) {
+                const int val = (int)((c >> (8 * k)) & 0xff) + add[k];
+                out[k] = val < 0 ? 0 : val > 255 ? 255 : val;
+            }
+            line[x] = (c & 0xff000000u) | (uint32_t)out[0] | ((uint32_t)out[1] << 8) | ((uint32_t)out[2] << 16);
+        }
+    }
 }
 void CpcVideo::drawSpriteChunk(const RasterLine* state, const SpriteState& spriteState, int displayY, int pixelY,
     const DisplayBounds& lineBounds, int spriteRasterLeft, int lineClipLeft, int chunkLeft, int chunkRight) {

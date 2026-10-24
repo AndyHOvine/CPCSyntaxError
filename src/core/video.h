@@ -109,6 +109,8 @@ public:
     bool lightgunRgbBright(int rgb);
     uint32_t packedColor(int rgb);
     int applyMonitor(int rgb);
+    void applyChromaBandwidth();
+    std::vector<std::array<int, 4>> deferredIoMarks;   // x, y, colour, width: drawn after the filter
     int penColor(int pen);
     int penColor(int pen, const PenState& state);
     void setPixel(int x, int y, int color, int width = 1);

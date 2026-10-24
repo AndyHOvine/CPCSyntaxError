@@ -205,6 +205,16 @@ struct CrtcType3 : CrtcBehaviour {
     // ACCC §17.5.2 (p.186): on these chips only an R1=0 written on the PREVIOUS line
     // is acknowledged — every position within the line is already too late.
     bool acknowledgesR1ZeroNow(CRTC6845&) const override { return false; }
+    // ...and an R1 write of ANY value is compared from the next character on: one that
+    // lands on the very character C0=R1 names is no C0=R1 there (no border, no VMA'
+    // update). The same deadline as R1=0 above and as R6 (§18.1: "Except on CRTC 3 and
+    // 4, R6 is considered immediately on the current C0"). MEASURED on SHAKER AO/I
+    // ("R1=63 ON C0=63", the second half by OUTI, whose write lands on C0=63 by §4.4.3):
+    // the real 6128 Plus (CRTC 3 and 4) and AmSpiriT 2.0 repeat the same text row in both
+    // halves, VMA' never updated; ours took the match and walked the pointer on, a black
+    // half screen. CRTC 0 takes it, and its photo shows the pointer walking.
+    bool takesR1MatchInWriteCharacter() const override { return false; }
+    bool vsyncWaitsForC0LeavingZero() const override { return true; }
     bool testsR6ZeroAtLineStart() const override { return true; }     // ACCC §18.3.4
     bool delaysVsyncOneLineInIvm(CRTC6845& crtc) const override {
         // §16.5: R9 odd, IVM mode (R8=3), odd frame, odd C4.
@@ -243,11 +253,14 @@ struct CrtcType3 : CrtcBehaviour {
     // -- "Setting R6 to 0 when C4 and C9 are 0, but C0>0 will have no effect before the new
     // frame", so not at the next line start of the same row.
     bool clearsVDisplayOnRowMatch() const override { return false; }
-    void advanceHsync(CRTC6845& crtc) const override {
-        int width = crtc.registers[3] & 0x0f;
-        crtc.hsyncCounter = (crtc.hsyncCounter + 1) & 0x0f;
-        if (crtc.hsyncCounter == width) { crtc.hsync = false; crtc.onHsync(); }
-    }
+    // No advanceHsync of its own: ACCC 1.11 §15.3.1 (p.149) "On the CRTC's 1, 2, 3 and 4,
+    // there is a bug if C0=R2 on C0=R2+R3", and §15.3.2 "On the other CRTC's, the HSYNC does
+    // not end and C3 will overflow": the standard body's overflow. This chip had a plain
+    // end-on-equality instead (from the port, no citation), so an HSYNC reaching R3l on
+    // C0=R2 ended and a NEW one began there, restarting the GATE ARRAY's H06. SHAKER DH/B on
+    // CRTC 3 (R0=1, R2=0, R3=6) is that case: the C-HSYNC was cut at 2 usec and a second one
+    // sent 4 usec later, where the real 6128 Plus and AmSpiriT 2.0 show one ordinary sync and
+    // the 17 usec black block of the overflowed HSYNC.
     void reloadNextRowAddress(CRTC6845& crtc) const override {
         // ASIC honours a mid-frame screen split (ACCC §13.5); otherwise it reloads
         // the row address at the maximum-raster wrap like a real 6845.

@@ -333,9 +333,13 @@ int main(int argc, char** argv) {
             if (!speechKind.empty()) host.setSpeech(speechKind);
             KeyboardMatrix* kb = host.emu ? host.emu->keyboard : nullptr;
             std::vector<int16_t> wav;
+            // CPCSE_RENDER_EVERY=1: draw every frame as the window does. The shot mode only
+            // draws the last one, so a fault in the renderer never shows here without it.
+            static const bool renderEvery = std::getenv("CPCSE_RENDER_EVERY") != nullptr;
             auto run = [&](int n) {
                 for (int f = 0; f < n; f++) {
                     host.runFrame();
+                    if (renderEvery) host.render();
                     if (!wavPath.empty()) wav.insert(wav.end(), host.audioOut.begin(), host.audioOut.end());
                 }
             };

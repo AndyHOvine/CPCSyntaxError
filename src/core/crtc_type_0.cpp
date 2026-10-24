@@ -331,7 +331,17 @@ struct CrtcType0 : CrtcBehaviour {
     // §13.2.2 (p.106): "Each time C0=2, a state validates the update of C4=R7 on the next
     // C0=0. This state is cancelled when C0=0." (§16.4.1.2: the VSYNC is then blocked.)
     bool allowsVsyncStart(CRTC6845& crtc) const override { return crtc.vsyncAuthorized; }
-    bool allowsVsyncOnR7Write(CRTC6845& crtc) const override { return crtc.horizontal >= 2; }   // §11.5.2
+    // §11.5.2, and ACCC §16.4.1.1 (p.169): an R7 written with the value of C4 starts the VSYNC
+    // at once "except if this modification occurs when C0vs=0 or C0vs=1": a BLOCKED VSYNC.
+    // ...and the line's LAST microsecond, C0=R0, is already the next line's for R7: §16.4,
+    // "the update of R7 with C4 can take place up to the last µsecond preceding C4=R7... on
+    // line C4-1, C9=R9 and C0=R0". SHAKER B6/A ("OUTI ON R7 LAST CHANCE 4TH uSec ON C0=0")
+    // writes R7=32 on C0=R0 of C4=32's last line and reads the PPI 6 usec later: the real
+    // CRTC 0 prints #1E (no VSYNC) there, exactly as for the write one usec later on C0=0
+    // (§16.4.1.1's own examples are these two reads). Ours started the VSYNC: #1F WRONG!.
+    bool allowsVsyncOnR7Write(CRTC6845& crtc) const override {
+        return crtc.horizontal >= 2 && crtc.horizontal != (crtc.registers[0] & 0xff);
+    }
     // ACCC §14.4.4: R3=0 written by an OUT(C),r8 in the HSYNC's first µsec stops it early;
     // "On a CRTC 0, the HSYNC starts on the 5th pixel-M2 and lasts 4 pixel-M2's" -- black
     // on Pixel-M2 4 to 7. SHAKER BI/A draws that thin column (AmSpiriT 4 Pixel-M2); ours

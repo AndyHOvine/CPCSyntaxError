@@ -231,13 +231,15 @@ void GateArray::clockPixel() {
         hsyncPinFallIn -= 1;
         if (hsyncPinFallIn == 0) {
             hsyncPinFallIn = -1;
-            // Fell before the rise. CPC GATE ARRAY only: p.134's C-HSYNC table covers CRTC 0, 1
-            // and 2, and the Plus ASIC measures the other way. With the inhibit on CRTC 3, its
-            // DH/A2-A8 lost syncs AmSpiriT 2.0 shows (11.07 -> 11.49, a magenta line under the
-            // digits); they are HSYNCs started with R3l=1. And the real CRTC 3 AR photos
-            // show the strong shear that the extra syncs make. CRTC 0/1/2: DH unchanged to the
-            // second decimal, AR better on every screen.
-            if (!plusHardware && !sigGaHsync && h06Pixels < CHSYNC_RISE_PIXELS) cHsyncInhibited = true;
+            // Fell before the rise: no C-HSYNC for this HSYNC. On the Plus as well. ACCC 1.11
+            // §9.3.1: "ASIC's delay HSYNC by 1 usec, as they do for character display", i.e.
+            // start and end move together, so a 2 usec HSYNC-GA gives the same too-short pulse
+            // as on CRTC 0, 1 and 2. It was CPC-only, and on CRTC 3 every R3=2 HSYNC sent a full
+            // 4 usec sync: SHAKER AR's lines carried a second line sync 20 characters early
+            // (bent bands the user marked), DT/B1 a hook. MEASURED with it on the Plus: CRTC 3
+            // AR 226.0 -> 173.9 and DT 70.0 -> 31.3 against AmSpiriT 2.0, DH +0.2, CRTC 4
+            // unchanged. (The earlier DH/A2-A8 "magenta line" reason was 0.4 on one screen.)
+            if (!sigGaHsync && h06Pixels < CHSYNC_RISE_PIXELS) cHsyncInhibited = true;
             endCHsync();
         }
     }
@@ -323,6 +325,13 @@ void GateArray::onCrtcVsyncPin(bool high) {
 void GateArray::armCHsyncFall(int delayCharacters) {
     hsyncPinFallIn = PIXELS_PER_CHARACTER * (1 + delayCharacters) + hsyncFallPhase16;
     cHsyncFallArmed = true;
+}
+
+// The HSYNC end the host armed late (armCHsyncFall) never happens: the CRTC took it back
+// before it reached this chip (CRTC6845::onHsyncEndRevoked, ACCC §14.5.3).
+void GateArray::revokeCHsyncFall() {
+    hsyncPinFallIn = -1;
+    cHsyncFallArmed = false;
 }
 
 void GateArray::onHsync(Z80* cpu) {

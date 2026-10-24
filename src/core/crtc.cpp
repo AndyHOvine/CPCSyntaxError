@@ -28,6 +28,7 @@ CRTC6845::CRTC6845(const Crtc6845Options& options) {
     onSelect = options.onSelect ? options.onSelect : [](int) {};
     onHsyncStart = options.onHsyncStart ? options.onHsyncStart : []() {};
     onHsyncCancelled = options.onHsyncCancelled ? options.onHsyncCancelled : []() {};
+    onHsyncEndRevoked = options.onHsyncEndRevoked ? options.onHsyncEndRevoked : []() {};
     onCharacterStart = options.onCharacterStart ? options.onCharacterStart : []() {};
     onCharacter = options.onCharacter ? options.onCharacter : []() {};
     getHorizontalScroll = options.getHorizontalScroll ? options.getHorizontalScroll : []() { return 0; };
@@ -68,7 +69,7 @@ void CRTC6845::reset() {
     verticalMatchForced = false; vsyncGhost = false; lastLineBlocked = false;
     lastFrameLine = false; lastLineManagement = false; lastPreviousLine = false;
     addressFrozenForAdditionalLine = false; verticalAdjustState = false;
-    vsyncHalfLinePending = false; vsyncFullLinePending = false; vsyncSkipsFirstLineEnd = false;
+    vsyncHalfLinePending = false; vsyncFullLinePending = false; vsyncSkipsFirstLineEnd = false; vsyncC0LeavePending = false;
     hDisplay = registers[1] != 0;
     hDisplayInternal = hDisplay; skewHistory = 0;
     vDisplay = behaviour->initialVerticalDisplay(*this); frame = 0;
@@ -161,6 +162,14 @@ void CRTC6845::writeRegister(int reg, int value) {
     }
     if (reg == 12 || reg == 13) {
         requestedAddress = screenAddress();
+        // ACCC §20.3.3 (p.244, CRTC 2): the C0=R1 transfer of R12/R13 into VMA' takes a
+        // write that lands ON the character C0=R1. The chart: OUT R12,#30 landing on
+        // C0=39 or on C0=40 (=R1) gives offset #30, landing on C0=41 keeps #10. Ours did
+        // the transfer as the character opened, before the write. MEASURED on SHAKER
+        // ACOPY/A1 (R12 landing on C0=R1 on the frame's last line): the real CRTC 2 shows
+        // the new page (noise); A2 (C0=R1+1) the old one (text).
+        if (horizontal == registers[1] && behaviour->takesOffsetWriteOnR1Character())
+            behaviour->reloadNextRowAddress(*this);
     }
     // ACCC §11.3 UPDATING R5 DURING AN ADJUSTMENT: "Whatever the CRTC, if R5 is
     // modified with C5+1 (or C9+1 on CRTC's 0, 3, 4) on line C5 (or C9), then the
@@ -196,7 +205,7 @@ void CRTC6845::writeRegister(int reg, int value) {
     // so an R1=0 landing ON C0=0 is not a C0=R1 there. On CRTC 0, 1 and 2 C0=0 is still in
     // time and the two rules agree.
     const bool r1ZeroTooLate = reg == 1 && registers[1] == 0 && !behaviour->acknowledgesR1ZeroNow(*this);
-    if (reg == 1 && horizontal == registers[1] && !r1ZeroTooLate) {
+    if (reg == 1 && horizontal == registers[1] && !r1ZeroTooLate && behaviour->takesR1MatchInWriteCharacter()) {
         const bool pinBefore = hDisplay;
         behaviour->reloadNextRowAddress(*this);
         hDisplay = false;                       // "there is no longer any display"
@@ -232,7 +241,13 @@ void CRTC6845::writeRegister(int reg, int value) {
             hDisplay = skewNow == 0 ? hDisplayInternal : ((skewHistory >> 1) & 1) != 0;
     }
     // ACCC §19.8.1: entering IVM defers the doubled-C9 comparison to the next C0=0.
-    if (reg == 8 && displayMode() == 3) ivmTestDeferred = true;
+    // ENTERING it: p.220 says "When R8 CHANGES to 3" and "on the line where R8 GOES to 3".
+    // An R8 rewritten with the 3 it already holds activates nothing. SHAKER B9 ("INTERLACE IVM
+    // DELAYS") rewrites R8=3 on every line after the one it is timing, and R8=3, R9=6 again on
+    // C4=6 C9=3, the row's last line: taken as an activation there, C9 was compared undoubled,
+    // missed R9 and ran its 16 extra lines, twice a frame (#2F20 usec where the real CRTC 0 and
+    // AmSpiriT 2.0 print #2720).
+    if (reg == 8 && displayMode() == 3 && displayModeOf(r8Previous) != 3) ivmTestDeferred = true;
     // ACCC §19.8.1 (p.221): "When R8 returns to 0, the same mechanics apply. The state
     // set with R8 is considered when C0 returns to 0. The test takes place with C9.VMA
     // (which includes parity) and R9: ParityC9 is no longer considered for R9."
@@ -337,6 +352,25 @@ void CRTC6845::writeRegister(int reg, int value) {
             hsyncEndedByBlockWrite = true;
             onHsync();
             hsyncEndedByBlockWrite = false;
+        }
+        // ...and the other side of the same lag. On the character where OUR count has just
+        // ended the HSYNC (C0=R2+R3l, ours reading R3l), the chip's reads R3l - lag and its
+        // HSYNC is still running. A write landing there meets the chip's next compare as in
+        // §14.5.3's rows: the old R3l ends it where it was ending anyway; a larger value runs
+        // it on to that value (the "OUT R3,6" row); a smaller one overflows C3 through 15
+        // (the "OUT R3,4" row). So our pulse is taken back, and our count goes on from R3l.
+        // SHAKER DH/B on CRTC 3 is this case: "R0=1/R3=6 TO 1/R2=0 >R3 UPDATE ON
+        // C0=R2+R3+1 (=1) AND C0=R2", "HSYNC R3=6 ON 47th CHAR". The R3=6 written on C0=1
+        // lengthens the R3=1 HSYNC opened on C0=0, the 47th character, which is where the
+        // text lines above have theirs. Ours had already ended that one and gave the 6 to
+        // the NEXT R0=1 line's HSYNC, two characters on: the band's line sync came out
+        // 2 usec late and 2 usec short, and the monitor drew the band 2 to 3 usec left of
+        // where the real 6128 Plus and AmSpiriT 2.0 put it.
+        if (reg == 3 && !hsync && hsyncDroppedThisCharacter && !hsyncEndedJit && lag > 0
+            && hsyncCounter >= lag && (effectiveHsyncWidth() & 0x0f) != hsyncCounter) {
+            hsync = true;
+            hsyncDroppedThisCharacter = false;
+            onHsyncEndRevoked();
         }
     }
     // An R3 written on C0=R2 can START the HSYNC that R3=0 withheld there (§14.6: "When
@@ -521,7 +555,11 @@ int CRTC6845::videoRaster(int verticalScroll) {
     // against R9. In IVM C9.VMA legitimately runs past R9 -- §19.8.1's chronograms
     // (p.222) give C9-VMA 7 on an odd frame with R9=6 -- and folding it by R9+1 turned
     // every one of those into 0.
-    if (!asicInterlace && ivm < 0) {
+    // The same holds for a plain C9 that has run past R9: only the scroll is folded.
+    // ACCC §13.2.6 (p.109): with R0=0 on CRTC 0, C9 counts on past R9=0 under the
+    // additional management (up to 31), and each of those lines takes its address from
+    // C9 itself. Folding C9=1 onto 0 put every line of SHAKER A7's box one raster late.
+    if (!asicInterlace && ivm < 0 && rasterVal <= maximumRaster()) {
         int wrap = oldInterlaceVideo() ? ((maximumRaster() | 1) + 1) : maximumRaster() + 1;
         if (scrolled > maximumRaster()) scrolled -= wrap;
     }
@@ -776,6 +814,18 @@ void CRTC6845::startVsyncIfNeeded(bool liveWrite) {
                 vsyncHalfLinePending = true;
                 return;
             }
+            // CRTC 3/4 with R0=0: the condition is met on C0=0 but the pin waits for C0 to move
+            // on from 0, which with R0=0 it never does (ACCC 1.11 gives no rule for this case;
+            // §16.4.4 only states the condition, "C4=R7 and C9=C0=0"). MEASURED on SHAKER AI
+            // ("VSYNC CONDITIONS", "LOST VSYNC ON R0=0 (EVENT)") on the real 6128 Plus: R0=0
+            // written on C4=R7-1's last line, PPI read inside the R0=0 stretch gives VSYNC OFF
+            // (#DE), and the reads after R0 is set back above 2 give VSYNC ON (#DF). The R0=1
+            // groups read ON throughout, as here. Ours rose at once and its sixteen 1 usec
+            // lines were over before R0 came back: ON, then OFF: the inverse.
+            if (!liveWrite && (registers[0] & 0xff) == 0 && behaviour->vsyncWaitsForC0LeavingZero()) {
+                vsyncC0LeavePending = true;
+                return;
+            }
             vsyncCounter = 0;
             // ACCC §16.4.1 (p.169, CRTC 0): "When R7=C4 with C0vs>1, the VSYNC is
             // triggered during the line. In this case, the row counter starts with 0.
@@ -928,7 +978,7 @@ void CRTC6845::traceLine() {
     if (wantR4 == -2) { const char* w = std::getenv("CPCSE_TRACE_LINE_R4"); wantR4 = w ? std::atoi(w) : -1; }
     if (wantR4 >= 0 && (registers[4] & 0x7f) != wantR4) return;
     if (traceLineBudget > 0 && frame >= traceLineFrom) {
-        std::fprintf(stderr, "  line f%-6d n=%3d C4=%3d C9=%2d R4=%3d R5=%2d R9=%2d R8=%d r9M=%d par=%d fld=%d%s%s  h%d C3=%d%s R2=%d R3=%d R0=%d LL=%d LP=%d LM=%d us=%ld\n",
+        std::fprintf(stderr, "  line f%-6d n=%3d C4=%3d C9=%2d R4=%3d R5=%2d R9=%2d R8=%d r9M=%d par=%d fld=%d%s%s  h%d C3=%d%s R2=%d R3=%d R0=%d LL=%d LP=%d LM=%d us=%ld ma=%04X row=%04X nrow=%04X\n",
                      frame, traceFrameLines, vertical, raster,
                      registers[4] & 0x7f, registers[5] & 0x1f, registers[9] & 0x1f,
                      registers[8] & 3, r9Match ? 1 : 0, rasterParity & 1, interlaceField & 1,
@@ -936,7 +986,8 @@ void CRTC6845::traceLine() {
                      vsync ? (vsyncGhost ? "  VSYNC(ghost)" : "  VSYNC") : "", hsync ? 1 : 0, hsyncCounter,
                      hsyncOverflow ? "o" : "", registers[2] & 0xff, registers[3] & 0xff,
                      registers[0] & 0xff, lastFrameLine ? 1 : 0, lastPreviousLine ? 1 : 0,
-                     lastLineManagement ? 1 : 0, traceCharacters);
+                     lastLineManagement ? 1 : 0, traceCharacters,
+                     maRow & 0x3fff, rowAddress & 0x3fff, nextRowAddress & 0x3fff);
         traceLineBudget -= 1;
     }
 }
@@ -1361,7 +1412,7 @@ void CRTC6845::updateVertical() {
     if (registers[1] == 0 && behaviour->assignsVmaPrimeBeforeVma()) {
         int savedHorizontal = horizontal;
         horizontal = 0;
-        behaviour->reloadNextRowAddress(*this);
+        behaviour->reloadNextRowAddressBeforeLineStart(*this);
         horizontal = savedHorizontal;
     }
     int verticalScroll = getHorizontalScroll() & 7;
@@ -1489,6 +1540,15 @@ void CRTC6845::tickCharacter() {
     // Moving them down beside checkHsync, where C0 is already the character being
     // output, makes the pin rise a character earlier and DOUBLES frame-check's
     // interlace-period failures, 6 to 12 -- measured, not assumed.
+    if (vsyncC0LeavePending && horizontal != 0) {      // CRTC 3/4, R0=0: see startVsyncIfNeeded
+        vsyncC0LeavePending = false;
+        if (!vsync) {
+            vsyncCounter = 0; vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;
+            vsyncGhost = behaviour->vsyncStartIsGhost(*this);
+            if (vsyncGhost) traceGhostStart();
+            if (!vsyncGhost) onVsyncStart();
+        }
+    }
     if (vsyncHalfLinePending && horizontal == (registers[0] >> 1)) {
         vsyncHalfLinePending = false;
         vsyncCounter = 0; vsync = true; traceFrameVsyncs += 1; dbgCrtcVsyncStarts += 1;

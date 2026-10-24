@@ -93,7 +93,8 @@ public:
 
     // time (us since power on), the motor, the heads
     long long now = 0;
-    long long motorSince = -1;           // when the motor last started (-1: off)
+    long long motorSince = -1;           // when the disc last started to turn (-1: stopped)
+    long long motorOffAt = -1;           // when the motor bit last went off (-1: not since reset)
     int stepRateMs = 12, headLoadMs = 4, headUnloadMs = 32;   // SPECIFY's, at 4 MHz
     long long headLoadedUntil = -1;      // the head stays loaded until then
     struct Seek { bool busy = false; long long doneAt = 0; int target = 0, st0 = 0; };

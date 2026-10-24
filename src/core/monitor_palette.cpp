@@ -147,12 +147,26 @@ static double intensityGain(int knob) { return std::max(0, std::min(200, knob)) 
 
 static constexpr int LUM_STEPS = 4096;
 
+// THE COLOUR TUBE'S RESPONSE TO THE GATE ARRAY'S THREE LEVELS. The chip drives each gun at
+// off, half or full (GA_RGB: 0x00 / 0x63 / 0xFF). How bright those look is the set's, and no
+// document gives it (ACCC 1.11 and the RAG library have no levels or voltages). Taken from
+// AmSpiriT 2.0, whose renders the user judged closer to the real CTM photographs than ours
+// ("ours is way too bright"): the median of its pixel over 335 SHAKER screens (CRTC 0) where
+// ours is one flat colour (scratch/palette_map.py). Full is about 0xF3 on every gun, half is
+// 0x6E red, 0x7B green, 0x6A blue. Between the measured points the response is linear.
+static constexpr int TUBE_HALF[3] = { 0x6E, 0x7B, 0x6A };
+static constexpr int TUBE_FULL[3] = { 0xF3, 0xF2, 0xF5 };
+static int tubeLevel(size_t k, int c) {
+    if (c <= 0x63) return (c * TUBE_HALF[k] + 0x63 / 2) / 0x63;
+    return TUBE_HALF[k] + ((c - 0x63) * (TUBE_FULL[k] - TUBE_HALF[k]) + (0xFF - 0x63) / 2) / (0xFF - 0x63);
+}
+
 void TubeTransform::configure(const std::string& mode, const TubeKnobs& knobs) {
     const std::string m = normaliseMonitorMode(mode);
     const double offset = brightnessOffset(knobs.brightness, m != MONITOR_MODE_COLOUR), gain = contrastGain(knobs.contrast);
     const double gamma = tubeGamma();
     colour = m == MONITOR_MODE_COLOUR;
-    identity = colour && knobs.isDefault();
+    identity = false;                   // the colour set has its own response (tubeLevel)
     auto drive = [&](int c) { return c <= 0 ? 0.0 : std::pow(c / 255.0, 1.0 / gamma); };
     auto shown = [&](double d) { return std::pow(clamp01(gain * d + offset), gamma); };
     // Last of all, and outside the set: each channel's output intensity, on the light.
@@ -163,7 +177,7 @@ void TubeTransform::configure(const std::string& mode, const TubeKnobs& knobs) {
     if (colour) {
         for (size_t k = 0; k < 3; k++)
             for (int c = 0; c < 256; c++)
-                channelOut[k][(size_t)c] = (int)std::lround(output(shown(drive(c)), k) * 255.0);
+                channelOut[k][(size_t)c] = (int)std::lround(output(shown(drive(tubeLevel(k, c))), k) * 255.0);
         return;
     }
     // The LUM pin: the resistor mixer's weighted sum on the linear drives, in LUM_STEPS steps.

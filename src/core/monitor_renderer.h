@@ -128,6 +128,12 @@ inline constexpr int MONITOR_HPULSE_MIN = 4;
 // lines carrying a second sync (D1, D3, DH) is dragged across progressively -- the LEAN
 // the photographs show and neither this model nor AmSpiriT used to draw.
 inline constexpr int MONITOR_AFC_LINES = 73;
+// §14.4's width shift settles a third of the remaining way each line (read off the real
+// CTM photograph of SHAKER DH/B2 on CRTC 1, whose band drifts over about eight lines).
+inline constexpr int MONITOR_WIDTH_SETTLE_DIV = 3;
+// With no line sync at all the set runs at its own frequency, a little low: the sweep falls
+// this far behind per line, x16 (0.25 Pixel-M2; SHAKER D8's real CTM photographs, see 'n').
+inline constexpr int MONITOR_COAST_DRIFT16 = 4;
 // How far the slow part goes, as a multiple of the discriminator's fast target. The
 // datasheet has no loop gain; this is read off SHAKER D3/A4 and D3/B8 on a real CTM (see
 // CtmMonitor::decide, branch 'd').
@@ -149,7 +155,11 @@ inline int monitorPhasePullEarly16(int pulseWidth16) {
 // D1/A ("CSYNC4 VS 2 X CSYNC2") drives two 2 usec pulses 80 Pixel-M2 apart that the
 // reference draws exactly where one sync would put the line. Counting that pair as an
 // interloper moved the whole of D1/A 6 Pixel-M2 left, 3.5 -> 16.4 on CRTC 0 and 2. D3's
-// nearest interloper is 112 out and does move.
+// nearest interloper is 112 out and does move. WITHIN 6 usec, strictly: SHAKER DH/B1 on
+// CRTC 1 puts a full C-HSYNC exactly 96 Pixel-M2 after a 49-wide line sync on every line of
+// its band, and the real CRTC 1 photograph and AmSpiriT 2.0 show the band's stripes leaning
+// (the late pull plus the AFC drift); taken as the same complex it pulled nothing and the
+// stripes stood straight.
 inline constexpr int MONITOR_PHASE_DEADZONE = 6 * 16;
 inline constexpr int MONITOR_PHASE_TIPS = 8;         // tips a window can hold
 // THE RAMP'S SHAPE, measured the same way (tools/monitor_response.py). The response is
@@ -189,6 +199,23 @@ inline int monitorPhaseTaper(int pull, int distance16, bool early = false) {
     const int span = window - flat;
     return (pull * (window - distance16) + span / 2) / span;
 }
+// THE EARLY SIDE AT A DISTANCE. D3 measured early pulses only 7-12 characters out, at 4/7 of
+// the late pull. SHAKER AT (AT/F on CRTC 0/1, AT/E on CRTC 1) puts one 24-25 characters
+// early beside a late one at +29, and AmSpiriT 2.0 moves that band 11 Pixel-M2 LEFT, where the
+// late pulse alone (AT/E on CRTC 0, which has only it) moves it 10 right in both. So far out
+// the early pulse pulls about as hard as a late one: 4/7 to 12 characters, rising to full
+// strength at 20, flat to the late side's 26.4, nothing by 31 (the late side mirrored).
+inline constexpr int MONITOR_PHASE_EARLY_FULL = 20 * 16;
+inline int monitorPhaseEarlyPull16(int pulseWidth16, int distance16) {
+    const int full = monitorPhasePullLate16(pulseWidth16);
+    const int closePull = monitorPhasePullEarly16(pulseWidth16);
+    if (distance16 <= MONITOR_PHASE_FLAT_EARLY) return closePull;
+    if (distance16 < MONITOR_PHASE_EARLY_FULL)
+        return closePull + ((full - closePull) * (distance16 - MONITOR_PHASE_FLAT_EARLY)
+                       + (MONITOR_PHASE_EARLY_FULL - MONITOR_PHASE_FLAT_EARLY) / 2)
+                      / (MONITOR_PHASE_EARLY_FULL - MONITOR_PHASE_FLAT_EARLY);
+    return monitorPhaseTaper(full, distance16);      // flat, then the late side's taper
+}
 inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
 // THE LINE SYNC'S OWN PULL (branch 'l'), measured on SHAKER D7 ("R2 OSCILLATION STORY"):
 // R2 alternates between two values on alternate lines over a band, so the line sync moves
@@ -199,11 +226,23 @@ inline constexpr int MONITOR_PHASE_NO_TIP = 1 << 24;
 // with the swing. That is a LINEAR phase detector: a pull of a fixed fraction of the error
 // on every line. The old pull was 1 or 3 Pixel-M2 by the sign of the error; it settles
 // where both lines pull the full 3, about 6 Pixel-M2 from the early sync, and never at the
-// mean. 1/4 a line: the step reaches 90 % in 8 lines, which is one text row on two sets of
-// photographs: D7/A2's band is over in its second row, and D3's band (the sweep pushed 49
-// Pixel-M2 by the second sync) is back in place one row after it ends. A +-a swing leaves
-// alternate lines a*2/7 apart (5 Pixel-M2 on A2). 1/8 took two to three rows on D3.
-inline constexpr int MONITOR_LINE_PULL_DIV = 4;
+// mean. The step reaches 90 % in 8 lines, which is one text row on two sets of photographs:
+// D7/A2's band is over in its second row, and D3's band (the sweep pushed 49 Pixel-M2 by the
+// second sync) is back in place one row after it ends.
+//
+// AND the line-to-line swing is filtered out: on D7/A5 (+-2 characters every line) the real
+// text is only slightly doubled. A pull of 1/4 of each line's own error put alternate lines
+// 9 Pixel-M2 apart there (the text unreadable); 1/8 halves that but takes two rows to settle.
+// No first-order pull does both, so the error goes through a low-pass first (the AFC
+// filter's job): f += (e - f)/2, then the sweep moves f/5 a line. Simulated
+// (scratch/pll_sim.py): 90 % in 8 lines, no overshoot, +-32 leaves lines 2.2 apart.
+inline constexpr int MONITOR_LINE_FILTER_DIV = 2;
+inline constexpr int MONITOR_LINE_PULL_DIV = 5;
+// A sync TRAIN (decide(), branch 't'): this many tips or more in the window, and the kick's
+// decay per line. Read from SHAKER D4's photographs (see decide()).
+inline constexpr int MONITOR_TRAIN_TIPS = 4;
+inline constexpr int MONITOR_TRAIN_DECAY_NUM = 4;
+inline constexpr int MONITOR_TRAIN_DECAY_DEN = 5;
 // Beyond this the detector is out of its linear range and the sweep re-locks on the line
 // (the old snap). Half the CTM's 12 usec flyback sawtooth (docs: CM14 TP9), 6 usec. D7/A5
 // swings 4 characters (64 Pixel-M2) every line and the photograph shows it averaged, not
@@ -356,6 +395,9 @@ public:
     // two tips have the SAME width (measured: all 44 D3 subtests) and this changes
     // nothing.
     int lastPulseWidth = 4;
+    int widthCorrection16 = 0;      // the 14.4 width shift as the AFC has reached it, x16
+    int widthTargetPrevious16 = 0;  // ...and where the last line sync asks it to go
+    int coastDrift16 = 0;           // branch n: the free-running drift not yet moved, x16
     long long lineSyncAt = -1;      // when the sweep last accepted a line sync
     long long tipStartAt = 0;       // ...and when the tip now running began
     // Armed by the host when a chosen SHAKER screen is being captured; see the LINEOFF
@@ -369,6 +411,13 @@ public:
     // The host adds it to the line in progress; cleared at every flyback.
     int lineSnap16 = 0;
     int afcCharge = 0;              // the AFC capacitor's slow pull x MONITOR_AFC_LINES (decide(), 'd')
+    int lineError16 = 0;            // branch 'l': the low-passed phase error, 1/16 Pixel-M2
+    int linePull16 = 0;             // branch 'l': the part of a Pixel-M2 not moved yet, 1/16
+    bool lineFilterPrimed = false;  // branch 'l': the filter holds a real error
+    int trainLines = 0;             // branch 't': lines of the current sync train
+    int trainOffset = 0;            // branch 't': the kick still applied, Pixel-M2
+    int bandLines = 0;              // branch 'd': lines of the current two-sync band
+    bool trainKicked = false;       // branch 't': the kick of this train is applied
     // THE LAST DECISION, for diagnostics: which branch decide() took, the phase it acted on
     // and how far it moved the sweep, with a sequence number so the host can tell a new one.
     // The host files it on the line being swept, so a drawn row can be tied to the decision

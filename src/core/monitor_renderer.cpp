@@ -34,7 +34,8 @@ void CtmMonitor::reset() {
     tipRetriggered = false;
     lastPulseWidth = 4;
     lineSyncAt = -1; tipStartAt = 0;
-    afcCharge = 0;
+    widthCorrection16 = 0; widthTargetPrevious16 = 0; coastDrift16 = 0;
+    afcCharge = 0; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; trainLines = 0; trainOffset = 0; trainKicked = false;
     lineSnap16 = 0;
     measuredPeriod = MONITOR_HSYNC_MID;
     sinceLastSync = 0;
@@ -73,6 +74,8 @@ void CtmMonitor::decide() {
         ~Record() { m.decisionMove = m.hsyncCount - before; m.decisionSeq += 1; }
     } record{*this, countBefore};
     decisionTips = pendN; decisionPhase = pendPhase; decisionBranch = '-';
+    const int bandBefore = bandLines;
+    bandLines = 0;                      // branch 'd' counts its band's lines; any other ends it
     decisionPull = 0; decisionWidth = lastPulseWidth; decisionSlow = 0;
     // A tip that arrived inside the window recorded its position BEFORE the pull below
     // moved the counter; where the flyback used to pull first, it recorded it after. Carry
@@ -118,24 +121,69 @@ void CtmMonitor::decide() {
     // lines of reacquisition afterwards.
     //
     // A television coasts: the flywheel keeps running and the AFC ignores the interval.
-    if (vsyncSeparated) { decisionBranch = 'v'; return; }
-    // EXACTLY TWO tips, which is what the response was measured on.
+    if (vsyncSeparated) { decisionBranch = 'v'; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; return; }
+    // EXACTLY TWO tips, which is what the response was measured on (four or more are a
+    // train, branch 't' below).
     //
-    // SHAKER's AR family puts THREE on a line -- measured off its own pin at 0, +17 and
-    // +37 characters, with the first two sometimes only 2 Pixel-M2 wide (9.3.1's "very
-    // short C-HSYNC... much too short to be detected by the monitor") -- and its
-    // references show the picture NOT displaced at all, on all six screens. How a
-    // discriminator sums two interlopers is not something the references measure: taking
-    // the taper at face value on those lines put every AR screen 1.5 to 4.2 worse.
-    //
-    // So the measured rule applies where it was measured. Three or more tips get no pull,
-    // which is also what the old 16-character window did to them by accident.
-    if (pendN == 2) {
+    // THREE stay without a pull. Tried 2026-10-23 with the two-sync rule summed over both
+    // interlopers: SHAKER AT/F (tips -24 and +29 characters from the line sync) then bent
+    // its hatch row LEFT where the real CPC and AmSpiriT 2.0 bend it RIGHT, and CRTC 3's AR
+    // and DH/A gained steps neither reference has. How a discriminator weighs an early and
+    // a late pulse together near the half line is not measured; AT/F is the screen to
+    // measure it on.
+    // A TRAIN of syncs (four or more tips in the window: SHAKER D4 drives 8 x 4 usec
+    // C-SYNC a line, every 8 characters) is not two syncs added up. Summed with the
+    // two-sync rule the early pulses cancel the late one (about 3 Pixel-M2), and summed
+    // on every line the sweep walks away along the train. The real CTM photographs of D4
+    // (CRTC 0-3) show a KICK at the band's start that dies away: the first lines about 20
+    // Pixel-M2 left, then 11, 8, 8, 6, 2, 1, 0 by ~13 lines (profile read off the hooks the
+    // photographs show on the boxes' left edges). The kick is the nearest late pulse's own
+    // measured pull (23 for a 4 usec pulse); it decays by MONITOR_TRAIN_DECAY a line.
+    // Both numbers are read from that photograph, not derived.
+    // ...a train in that sense: syncs on BOTH sides of the line sync, close in. D4's come every
+    // 8 characters, so one is always within the early side's flat. SHAKER DH/B2 on CRTC 1 has
+    // four tips a line too, but none early near the line sync (a late one 6 characters out,
+    // the others nearer the half line): that is a second sync with company, and the real CTM
+    // photograph shows what branch 'd' does with it: a pull that stays for the whole band,
+    // not a kick that dies away, which drew the band's top lines split off from the rest.
+    bool earlyClose = false;
+    for (int i = 0; i < pendN; i += 1) {
+        const int apart = pendErr[i] - pendErr[best];
+        if (i != best && apart <= -MONITOR_PHASE_DEADZONE && apart >= -MONITOR_PHASE_FLAT_EARLY) earlyClose = true;
+    }
+    if (pendN >= MONITOR_TRAIN_TIPS && earlyClose) {
+        decisionBranch = 't';
+        int kick = 0, nearestLate = MONITOR_PHASE_WINDOW;
+        for (int i = 0; i < pendN; i += 1) {
+            if (i == best) continue;
+            const int apart = pendErr[i] - pendErr[best];
+            if (apart <= MONITOR_PHASE_DEADZONE || apart >= nearestLate) continue;
+            nearestLate = apart;
+            kick = monitorPhasePullLate16(pendWid[i] > 0 ? pendWid[i] : lastPulseWidth);
+        }
+        // The kick comes on the BAND's second line (a band is consecutive lines carrying two
+        // or more syncs, train or not). One line carrying a train is no band: SHAKER DH/A puts
+        // four syncs on a single line, and the real CPC and AmSpiriT 2.0 keep the picture
+        // straight under it. DH/B2 on CRTC 1 opens its band with one three-sync line before
+        // the train: counted, the kick lands a line earlier and the bar tops are not split.
+        bandLines = bandBefore + 1;
+        int target;
+        if (!trainKicked && bandLines < 2) target = 0;
+        else if (!trainKicked) { target = kick; trainKicked = true; }
+        else target = trainOffset * MONITOR_TRAIN_DECAY_NUM / MONITOR_TRAIN_DECAY_DEN;
+        hsyncCount -= target - trainOffset;     // late (positive) = the sweep runs later
+        trainOffset = target;
+        trainLines += 1;
+        decisionPull = target;
+        lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
+        return;
+    }
+    trainLines = 0; trainOffset = 0; trainKicked = false;   // what is left is the line pull's to take back
+    if (pendN >= 2) {
         nearest = pendErr[best];
         for (int i = 0; i < pendN; i += 1) {
             if (i == best) continue;
             const int apart = pendErr[i] - nearest;
-            if (std::abs(apart) <= MONITOR_PHASE_DEADZONE) continue;    // same sync complex
             if (std::abs(apart) >= MONITOR_PHASE_WINDOW) continue;      // the next line's
             // The saturated pull for this pulse, tapered by where in the half line the
             // tip fell -- both measured, see the header.
@@ -144,11 +192,11 @@ void CtmMonitor::decide() {
             // full C-HSYNC too, but SHAKER AR on CRTC 3/4 puts a line sync of 64 Pixel-M2 next
             // to an R3l=2 pulse a few Pixel-M2 wide, and pulled the band 13 px at the full
             // pulse's strength -- where AmSpiriT and the photograph show it lined up.
+            if (std::abs(apart) < MONITOR_PHASE_DEADZONE) continue;     // same sync complex
             const int width = pendWid[i] > 0 ? pendWid[i] : lastPulseWidth;
             decisionWidth = pendWid[i];                                  // diagnostics: the interloper's
-            const int pull = monitorPhaseTaper(apart > 0 ? monitorPhasePullLate16(width)
-                                                         : monitorPhasePullEarly16(width),
-                                               std::abs(apart), apart < 0);
+            const int pull = apart > 0 ? monitorPhaseTaper(monitorPhasePullLate16(width), apart)
+                                       : monitorPhaseEarlyPull16(width, -apart);
             farPull += apart > 0 ? pull : -pull;
             if (std::abs(apart) <= (apart < 0 ? MONITOR_PHASE_FLAT_EARLY : MONITOR_PHASE_FLAT))
                 flatPull += apart > 0 ? pull : -pull;
@@ -182,8 +230,21 @@ void CtmMonitor::decide() {
         afcCharge += MONITOR_AFC_SLOW_GAIN * (inLock ? flatPull : 0) - afcCharge / MONITOR_AFC_LINES;
         const int phase = nearest + farPull + afcCharge / MONITOR_AFC_LINES;
         decisionPull = farPull; decisionSlow = afcCharge / MONITOR_AFC_LINES;
-        if (phase < 0) hsyncCount += phase < -5 ? 3 : 1;
-        else if (phase > 0) hsyncCount -= phase > 5 ? 3 : 1;
+        lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;      // the line pull starts afresh after the band
+        // Half of what is left, each line (at least one Pixel-M2): the D3 photographs move
+        // 16 Pixel-M2 within two lines (A4, B8), which a fixed 3 a line could not (6 in two);
+        // and SHAKER DH/B1 on CRTC 1 shows the curve this draws at the top of its band, where
+        // the fixed step left the first lines split off from the rest of each bar.
+        // ...from the band's SECOND line on. One line carrying a second sync is no band:
+        // SHAKER DH/A1, A3, A5, A7 put it on a single line, and the real CPC and AmSpiriT 2.0
+        // keep the picture straight under it; with half the pull taken on that line (12
+        // Pixel-M2) ours walked back over ten lines, a notch at both edges. The same rule as
+        // the train's kick ('t').
+        bandLines = bandBefore + 1;
+        if (bandLines < 2) return;
+        const int stepD = std::max(1, (std::abs(phase) + 1) / 2);
+        if (phase < 0) hsyncCount += stepD;
+        else if (phase > 0) hsyncCount -= stepD;
         return;
     }
     afcCharge = 0;                              // the band is over; the lock takes it back
@@ -217,10 +278,26 @@ void CtmMonitor::decide() {
         // (The snap used to come beyond ONE character; MONITOR_RELOCK16 says why it is the
         // detector's range now.)
         const int step = phase < 0 ? -phase : phase;
-        if (step > MONITOR_RELOCK16 && !holdOutOfRange) { hsyncCount -= phase; lineSnap16 -= phase; }   // re-lock, this line too
-        else if (step != 0) {
-            const int pull = std::max(1, (step + MONITOR_LINE_PULL_DIV / 2) / MONITOR_LINE_PULL_DIV);
-            hsyncCount += phase < 0 ? pull : -pull;
+        // (A sync that JUMPED more than a character used to re-lock at once, for SHAKER DH/B on
+        // CRTC 3. That band's line sync no longer jumps: the CRTC 3/4 C3 overflow and first-count
+        // rules (ACCC 15.3.2, 14.5.3) keep it where the text lines have theirs. The re-lock put the
+        // first line of every D7 band two characters out, where its photographs average from the
+        // first line on.)
+        if (step > MONITOR_RELOCK16 && !holdOutOfRange) {   // re-lock, this line too
+            hsyncCount -= phase; lineSnap16 -= phase;
+            lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
+        } else {
+            // The low-passed error, then a fifth of it; what is less than a Pixel-M2 is kept
+            // for the next line, so a small error still settles exactly (MONITOR_LINE_*).
+            // The first line the pull takes over (after a band, a re-lock, the vertical
+            // pulse) starts the filter at its own error, not at zero: from zero the first
+            // line pulled half as hard, D3's return took 2 lines more and AT/AY overshot.
+            if (!lineFilterPrimed) { lineError16 = phase * 16; lineFilterPrimed = true; }
+            else lineError16 += (phase * 16 - lineError16) / MONITOR_LINE_FILTER_DIV;
+            linePull16 += lineError16 / MONITOR_LINE_PULL_DIV;
+            const int move = linePull16 / 16;
+            linePull16 -= move * 16;
+            hsyncCount -= move;                 // late (phase > 0): the sweep runs later
         }
     // Out of lock: pull 5 Pixel-M2 a line, and ALWAYS THE SAME WAY. That looks like a
     // sign bug and is not one -- MEASURED, 2026-09-21, do not "fix" it again. pendPhase on
@@ -242,10 +319,23 @@ void CtmMonitor::decide() {
     // train, and the sweep re-locks onto it at once, whichever half it fell in.
     } else if (pendStable > -1024 && regularSync && !holdOutOfRange) {
         decisionBranch = 'r';                   // re-lock onto a regular train
+        lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
         const int wrapped = pendPhase < -(hsyncLimit >> 1) ? pendPhase + hsyncLimit : pendPhase;
         hsyncCount -= wrapped; lineSnap16 -= wrapped;
-    } else if (pendStable > -1024) { decisionBranch = 'c'; hsyncCount -= 5; }   // crawl
-    else decisionBranch = 'n';                  // no line sync at all: coast
+    } else if (pendStable > -1024) { decisionBranch = 'c'; hsyncCount -= 5; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false; }   // crawl
+    else {                                      // no line sync at all: coast
+        decisionBranch = 'n'; lineError16 = 0; linePull16 = 0; lineFilterPrimed = false;
+        // ...at the set's OWN frequency, which is a little lower than the line rate the sync
+        // held it to. MEASURED on the real CTM photographs of SHAKER D8 ("NO HSYNC FOR XX LINES"):
+        // the text rows during the gap lean progressively left, about 0.25 Pixel-M2 a line
+        // (D8/A4 0.28, D8/A6 0.2, off the picture's left edge), and the first sync after it
+        // pulls the picture back. Ours coasted at exactly 64 usec and drew the gap straight.
+        coastDrift16 += MONITOR_COAST_DRIFT16;
+        const int move = coastDrift16 / 16;
+        coastDrift16 -= move * 16;
+        hsyncCount -= move;                     // the sweep runs later: the picture moves left
+        return;
+    }
 }
 
 void CtmMonitor::hSync() {
@@ -492,7 +582,20 @@ bool CtmMonitor::clockPixel(bool csyncActive) {
     // built of lines carrying two syncs and it is the LAST tip that sets where the
     // picture lands. Left as the last tip.
     lineSnap16 = 0;                     // a new line: nothing re-locked in it yet
-    int widthCorrection = (64 - std::min(lastPulseWidth, 64)) / 2;
+    // ...reached GRADUALLY, a third of what is left each line. §14.4 gives where the picture
+    // settles, not how fast; the shift is the AFC centring a narrower pulse, and the AFC takes
+    // lines. MEASURED on the real CTM photograph of SHAKER DH/B2 on CRTC 1: its band's line
+    // sync drops from 64 to 49 Pixel-M2 (+7.5 by §14.4) beside a late interloper, and the band
+    // drifts smoothly from its first line, with no line standing 7 Pixel-M2 out; ours put the
+    // whole +7 on the band's second line and split it from the rest.
+    // ...from the line AFTER the narrower pulse: the AFC measures a pulse and corrects the lines
+    // that follow it, as the pull decisions do. Taken on the pulse's own line, DH/B2's second
+    // band line stood 3 Pixel-M2 right of the first where the photograph's is already 2 left.
+    const int widthTarget16 = widthTargetPrevious16;
+    widthTargetPrevious16 = (64 - std::min(lastPulseWidth, 64)) * 8;
+    widthCorrection16 += (widthTarget16 - widthCorrection16) / MONITOR_WIDTH_SETTLE_DIV;
+    if (std::abs(widthTarget16 - widthCorrection16) < MONITOR_WIDTH_SETTLE_DIV) widthCorrection16 = widthTarget16;
+    int widthCorrection = (widthCorrection16 + 8) >> 4;
     lineOffset = (hsyncCount & 15)
         + ((MONITOR_HSYNC_MID - hsyncLimit) >> 1)
         + widthCorrection;

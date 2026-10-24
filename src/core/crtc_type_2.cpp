@@ -345,6 +345,16 @@ struct CrtcType2 : CrtcBehaviour {
         if (crtc.adjustmentInterlaceExtra != 0) return true;
         return !((crtc.displayMode() & 1) && addsInterlaceLine(crtc));
     }
+    // ACCC §20.3.3 (p.244): "if R1 is 0 on the last line of the frame, VMA'= VMA AT THE
+    // BEGINNING OF THIS LINE", the line whose own C9 is R9. Before the counters step,
+    // C9 is still the previous line's, so only the R12/R13 branch (which §17.4.3 ties to
+    // the last-line state still in force) is decided here. Taking VMA'=VMA on the old
+    // C9 moved a row 63 characters on whenever R1=0 survived into the line after C9=R9:
+    // SHAKER AO/G (R1=0 on C0=&3E/&3F) lost its checker row on CRTC 2.
+    void reloadNextRowAddressBeforeLineStart(CRTC6845& crtc) const override {
+        if (crtc.lastFrameLine || endsAdjustment(crtc)) reloadNextRowAddress(crtc);
+    }
+    bool takesOffsetWriteOnR1Character() const override { return true; }   // ACCC §20.3.3
     void reloadNextRowAddress(CRTC6845& crtc) const override {
         // ACCC §20.3.3: "VMA' is a transient pointer updated with VMA when C0 reaches
         // R1 (and C9=R9). It allows to move forward in the video ram when all the

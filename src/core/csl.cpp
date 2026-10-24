@@ -404,6 +404,19 @@ bool CslPlayer::execute(const std::string& ins, const std::vector<std::string>& 
         std::string c = upper(a[0]);
         int t = c == "0" ? 0 : c == "1" || c == "1A" ? 1 : c == "1B" ? 5 : c == "2" ? 2 : c == "3" ? 3 : c == "4" ? 4 : -1;
         if (t < 0) { why = "unknown CRTC '" + a[0] + "' (0, 1, 1A, 1B, 2, 3 and 4 are emulated)"; return false; }
+        // A running classic machine changes its CRTC IN PLACE: the program keeps running.
+        // SHAKER's module B for CRTC 1 does "crtc_select 1B" in the middle of the script
+        // and then presses 'E' for its 1A/1B identifier (BO/TYPE-1B) in the program that
+        // is still running ("si la selection de crtc en cours de route pose prb sortir ce
+        // test"); rebuilding the machine there left the 'E' typed at a BASIC prompt and the
+        // screen never came. The Plus ASIC (3, 4) is a different machine and still needs one.
+        const bool asic = t == 3 || t == 4;
+        if (machineBuilt && !configChanged && emu.crtc && !emu.plusHardware && !asic) {
+            emu.crtc->setType(t);
+            crtcSelected = t;
+            say("  [%8.3fs] CRTC changed in place to %s", seconds(), a[0].c_str());
+            return true;
+        }
         crtcSelected = t;
         configChanged = true;
         return true;
@@ -1056,7 +1069,14 @@ bool CslPlayer::parseKeys(const std::string& text, bool fromFile, std::vector<St
         auto cell = cpcCharacterMapping(std::string(1, c), "", "uk");
         if (!cell) return;
         std::vector<std::pair<int, int>> cells{{(*cell)[0], (*cell)[1]}};
-        if ((*cell)[2]) cells.push_back(KEY_SHIFT);
+        // A LETTER is its key alone, whatever its case: the CPC's letter keys have no
+        // case, and the standard writes SHIFT out where a script wants it ({\(SHI)1}).
+        // Symbols that are a shifted key (", !, ...) keep their SHIFT. MEASURED on SHAKER
+        // BI/A (key_output 'I'): SHAKER reads SHIFT as a test option (row 2 bit 5, routine
+        // 6115: SHIFT down = no mode change), and the SHIFT we pressed with the I was still
+        // in its key buffer on the first frame of the test, the frame the screenshot shows.
+        // AmSpiriT 2.0 and the real CPC show the mode change.
+        if ((*cell)[2] && !std::isalpha((unsigned char)c)) cells.push_back(KEY_SHIFT);
         add(cells, false);
     };
     for (size_t i = 0; i < text.size(); ) {

@@ -114,6 +114,9 @@ struct CrtcBehaviour {
     // equality C4=R7 has not changed (C4=R7=0 for example), a new VSYNC starts
     // immediately as soon as the current VSYNC ends."
     virtual bool hasVsyncReentrancyProtection() const { return true; }
+    // CRTC 3/4: a VSYNC that comes due while R0=0 rises only once C0 moves on from 0
+    // (SHAKER AI on the real 6128 Plus; see CRTC6845::startVsyncIfNeeded).
+    virtual bool vsyncWaitsForC0LeavingZero() const { return false; }
     // ACCC §4.4.3 (p.26): the microsecond of an OUT (C),r8 at which the CRTC takes the
     // write, as a T-state offset from the instruction's start. "The CRTC misses the
     // I/O on the 3rd usec and retrieves it on the 4th" on the ASIC's of CRTC 3 and 4;
@@ -341,6 +344,10 @@ struct CrtcBehaviour {
     // is not; on CRTC 3 and 4 only a write from the PREVIOUS line makes it, so nothing
     // landing during this line is acknowledged. Returns whether now is still in time.
     virtual bool acknowledgesR1ZeroNow(CRTC6845& crtc) const;
+    // ACCC §17.3: "The condition C0=R1 is considered immediately on a line", including
+    // an R1 write that lands on the character C0=R1 names. Not on the ASIC (see the CRTC 3
+    // override): there the comparison of that character has already used the old R1.
+    virtual bool takesR1MatchInWriteCharacter() const { return true; }
     // ACCC §19.5: what an R8 write does to ParityC9 and ParityFrame. §19.5.3 (p.210)
     // says plainly that there are TWO of these moments -- "these updates are performed
     // on the 3rd AND 4th µseconds of the OUT(C),C instruction (on R8)" -- so the hook
@@ -379,6 +386,10 @@ struct CrtcBehaviour {
     // The VMA'=VMA or R12/R13 assignment (depending on status) therefore takes place
     // BEFORE VMA=VMA' assignment on position C0=0."
     virtual bool assignsVmaPrimeBeforeVma() const { return false; }
+    // The part of that C0=0 evaluation which runs before the counters step. It decides
+    // only VMA'=R12/R13 from the last-line state still in force; the ordinary VMA'=VMA
+    // step belongs to the new line and its own C9 (§20.3.3).
+    virtual void reloadNextRowAddressBeforeLineStart(CRTC6845& crtc) const { reloadNextRowAddress(crtc); }
     // ACCC §17.4.2 (p.183, CRTC 1): "if the R1 update takes place EXACTLY WHEN C0=R1
     // (R1.JIT), then the condition C0=R1 is no longer true and VMA' is not updated. If the
     // modification of R1 occurs when C0=R1+1 (C0>R1), then the condition C0=R1 is
@@ -423,6 +434,9 @@ struct CrtcBehaviour {
     virtual bool clearsVDisplayOnRowMatch() const { return true; }
     // Per-chip next-row start-address reload at C0=R1 (ASIC honours screen splits).
     virtual void reloadNextRowAddress(CRTC6845& crtc) const;
+    // ACCC §20.3.3: does the C0=R1 VMA' transfer take an R12/R13 write landing on that
+    // same character? CRTC 2 (p.244 chart). Elsewhere R12/R13 reach VMA' at the frame start.
+    virtual bool takesOffsetWriteOnR1Character() const { return false; }
     // DISPEN comb skew (R8 bits 4-5) — a real-6845 (0/2) artefact; 0 on UM6845R/ASIC.
     virtual int dispenSkew(CRTC6845& crtc) const { return 0; }
     // ACCC §19.2.3: the skew delays the BORDER R1 management -- the border-off of a new
@@ -583,6 +597,7 @@ struct Crtc6845Options {
     std::function<void()> onHsync;
     std::function<void()> onHsyncStart;
     std::function<void()> onHsyncCancelled;   // ACCC §14.5.4 Note 1: an OUTI R3=0 on C0=R2
+    std::function<void()> onHsyncEndRevoked;  // ACCC §14.5.3: CRTC 3/4 R3 write after our end
     std::function<void()> onCharacterStart;
     std::function<void()> onCharacter;
     std::function<void()> onVsyncStart;
@@ -597,7 +612,7 @@ struct Crtc6845Options {
 class CRTC6845 {
 public:
     // Callbacks.
-    std::function<void()> onHsync, onHsyncStart, onHsyncCancelled, onCharacterStart, onCharacter, onVsyncStart;
+    std::function<void()> onHsync, onHsyncStart, onHsyncCancelled, onHsyncEndRevoked, onCharacterStart, onCharacter, onVsyncStart;
     std::function<void(int)> onFrame, onScanline, onSelect;
     std::function<void(int, int)> onLightgunBeam;
     std::function<int()> getHorizontalScroll;
@@ -790,6 +805,7 @@ public:
     int lastWritePort = 0xffff;
     bool vsyncHalfLinePending = false;   // ACCC §19.3.1: interlace half-line VSYNC delay
     bool vsyncFullLinePending = false;   // ACCC §16.5: IVM one-complete-line VSYNC delay
+    bool vsyncC0LeavePending = false;    // CRTC 3/4: VSYNC due with R0=0 waits for C0 to leave 0
     bool vsyncSkipsFirstLineEnd = false; // ACCC §16.4.1: mid-line VSYNC start (CRTC 0)
     // ACCC §16.2.1: the GATE ARRAY blanks its output to black for the 26 lines its
     // V26 counter spans. Mirrored here by the host so the renderers can see it.

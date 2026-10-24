@@ -211,6 +211,7 @@ public:
     // hsyncDisplayDelayCharacters().
     bool cHsyncFallArmed = false;
     void armCHsyncFall(int delayCharacters);
+    void revokeCHsyncFall();
     void endCHsync();                   // close the pulse and publish its width
     bool sigGaHsync = false;            // HIGH = active
     bool sigGaVsync = false;
