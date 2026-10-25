@@ -18,6 +18,7 @@
 #include "playcity.h"
 #include "rs232.h"
 #include "speech.h"
+#include "host_midi.h"
 #include "symbiface_mouse.h"
 #include "sf2_rtc.h"
 #include "sf3.h"
@@ -45,6 +46,7 @@ GX4000::GX4000() {
     playcity = new PlayCity();
     serial = new AmstradSerial();
     speech = new SpeechSynth();
+    speech->midiOut = [](int byte) { HostMidi::send(byte); };   // LambdaSpeak 3 at 31250 baud
     symbifaceMouse = new SymbifaceMouse();
     sf2Rtc = new Symbiface2Rtc();
     sf3 = new Symbiface3();
@@ -778,6 +780,7 @@ void GX4000::captureRasterState() {
         line->screenAddress = crtc->screenAddress();
         line->lineAddress = crtc->rowAddress; line->videoRaster = crtc->vlc;
         line->verticalCounter = crtc->vertical; line->rasterCounter = crtc->raster; line->verticalAdjust = crtc->verticalAdjust;
+        line->displayedLine = -1; line->displayedLineAdjust = false;
         line->crtcType = crtc->type; line->interlaceVideo = crtc->oldInterlaceVideo();
         line->displaySkewBits = crtc->behaviour->displaySkew(*crtc);
         line->interlaceField = crtc->interlaceField;
@@ -829,6 +832,10 @@ void GX4000::captureRasterCharacter() {
     line->videoBytes[character * 2 + 1] = (uint8_t)memory->readVideo(address + 1);
     line->horizontalCounters[character] = (uint8_t)(crtc->horizontal & 0xff);
     line->displayEnabled[character] = (uint8_t)crtc->displayOutputBytes();
+    if (line->displayedLine < 0 && crtc->horizontal == 0) {
+        line->displayedLine = ((crtc->vertical & 0x3f) << 3) | (crtc->raster & 7);
+        line->displayedLineAdjust = crtc->verticalAdjust != 0;
+    }
     // The same question the beam renderer asks in plotBeamCharacter, asked at the same
     // moment -- onCharacterStart calls this and then that, so the pin has the same value
     // for both. The pipe models §9.3.1's per-chip HSYNC display delay.
@@ -926,7 +933,9 @@ void GX4000::loadCartridge(const Cartridge& cart, LoadCartridgeOptions options) 
     // SHAKER AI on the real 6128 Plus prints #DE/#DF where a classic 6128 (and our deck,
     // idle) gives #5E/#5F. The 464 Plus has its deck and keeps the deck's level.
     ppi->cassetteIdleHigh = plusComputer && ownRam >= 128;
+    m4->romOff = false; m4->resetLine = false;   // a power cycle: |M4ROMOFF lasts until one
     memory->classicExpansion = options.classicExpansion;
+    memory->cartridgeOnClassic = false;
     memory->loadCartridge(cart.banks); cartridge = std::make_shared<Cartridge>(cart); reset();
 }
 void GX4000::loadCartridge(const Cartridge& cart) { loadCartridge(cart, LoadCartridgeOptions{}); }
@@ -935,6 +944,7 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
     int selectedRam = options.ramKiB >= 0 ? options.ramKiB : (options.ram128 ? 128 : 64);
     plusComputer = false; plusHardware = false; gateArray->setPlusHardware(false); ramExpansion = selectedRam > 64; ramKiB = selectedRam; model = options.model;
     crtc->setType(options.crtcType); ppi->setPlusMode(false); ppi->cassetteIdleHigh = false;
+    m4->romOff = false; m4->resetLine = false;   // a power cycle: |M4ROMOFF lasts until one
     // ACCC §9 (p.44): on a classic CPC the GATE ARRAY is its own chip and which of the
     // three is fitted is a property of the machine -- the 40010 is what most 6128's
     // carry, so it is the default. The 40226 and the 40489 are not separate chips at
@@ -946,7 +956,7 @@ void GX4000::loadClassicFirmware(const LoadClassicOptions& options) {
     gateArray->jitModeSwitchPixel = crtc->behaviour->hsyncBlackEndPixelJit() + 1;
     crtc->hostOwnsScanlineIndex = true;   // the monitor owns the capture index
     memory->setRamSize(selectedRam);
-    memory->loadCartridge({}); memory->setLowerRom(options.lowerRom);
+    memory->loadCartridge({}); memory->cartridgeOnClassic = false; memory->setLowerRom(options.lowerRom);
     for (auto& r : memory->upperRoms) r.clear();
     memory->setUpperRom(0, options.basicRom);
     if (!options.amsdosRom.empty()) memory->setUpperRom(7, options.amsdosRom);
@@ -1014,7 +1024,7 @@ void GX4000::writePort(int port, int value) {
         gateArray->write(port, value);
     }
     if ((port & 0x2000) == 0) {
-        if (plusHardware != false) memory->selectUpperCartridgeFromPort(value);
+        if (plusHardware != false || memory->cartridgeOnClassic) memory->selectUpperCartridgeFromPort(value);
         else memory->setUpperRomSelect(value);
     }
     if ((port & 0x4000) == 0 && (port & 0x0300) <= 0x0100) {
@@ -1062,6 +1072,7 @@ int GX4000::readPortUntraced(int port) {
     if (sf2Rtc->handlesPort(port)) return sf2Rtc->readPort(port);
     if (sf3->handlesPort(port)) return sf3->readPort(port);
     if (ide->handlesPort(port)) return ide->readPort(port);
+    if (mouseIf.handlesPort(port)) return mouseIf.readPort(port);
     if (m4->enabled && high == 0xfe) return m4->dataPortRead();
     bool crtcSelected = (port & 0x4000) == 0;
     int crtcPort = (unsigned)port >> 8 & 3;
@@ -1221,6 +1232,21 @@ int GX4000::stepInstruction() {
     if (tape->instantLoad) {
         if (cpu->pc == 0x2836 || cpu->pc == 0x29a6) casReadTrap();
         else if (cpu->pc == 0x2a72 || cpu->pc == 0x2be2) motorStartWaitTrap();
+    }
+    // The M4 pulled the CPC's RESET line (|M4ROMOFF): the whole machine resets here.
+    if (m4->resetLine) { m4->resetLine = false; reset(); }
+    // |CTR: the M4's flashed cartridge image takes the cartridge's place. On a classic CPC the
+    // board maps it as a Plus would (bank 0 lower, &80+n upper); games that need the ASIC
+    // still fail there, as on the real board (the user: Alcon runs, Sonic does not).
+    if (m4->ctrBoot) {
+        m4->ctrBoot = false;
+        if ((plusComputer || !plusHardware) && !m4->cartFlash.empty()) {
+            memory->cartridgeOnClassic = !plusHardware;
+            Cartridge flashed; flashed.format = "m4"; flashed.banks = m4->cartFlash; flashed.bankCount = (int)flashed.banks.size();
+            memory->loadCartridge(flashed.banks);
+            cartridge = std::make_shared<Cartridge>(flashed);
+            reset();
+        }
     }
     cpuIoAccessed = false;
     timingInstructionActive = true;

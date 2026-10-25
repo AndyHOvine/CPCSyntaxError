@@ -233,7 +233,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -243,6 +243,7 @@ int main(int argc, char** argv) {
             else if (a == "--dumpram" && i + 1 < argc) dumpRamPath = argv[++i];  // raw RAM, no header
             else if (a == "--disk" && i + 1 < argc) diskPath = argv[++i];
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
+            else if (a == "--cro-group" && i + 1 < argc) croGroup = std::atoi(argv[++i]);   // the CRO group (GNUM) --cart takes
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
@@ -277,12 +278,14 @@ int main(int argc, char** argv) {
             else if (a == "--m4" && i + 1 < argc) m4Folder = argv[++i];   // an M4 board, this folder its SD card
             else if (a == "--sf2") sf2 = true;                                // a Symbiface II (its PS/2 mouse)
             else if (a == "--ide" && i + 1 < argc) { ideFolder = argv[++i]; sf2 = true; }   // its IDE, this folder the disc
+            else if (a == "--xmass") xmass = true;                            // an X-MASS IDE interface (with --ide)
             else if (a == "--sf3") sf3 = true;                                // a Symbiface III instead (with --ide too)
             else if (a == "--disk-writeback") diskWriteBack = true;              // save the disc's writes into its .dsk (headless: off)
             else if (a == "--multiface") multiface = true;                    // a Multiface II (its ROM from roms/); n in --mouse is STOP
             else if (a == "--serial" && i + 1 < argc) serialLine = argv[++i];  // the RS232C card: tcp:host:port, listen:port, com:COM3, loopback
             else if (a == "--xrom" && i + 1 < argc) xroms.push_back(argv[++i]);   // <slot>=<file>: an expansion ROM
             else if (a == "--mouse" && i + 1 < argc) { mouseScript = argv[++i]; sf2 = true; }
+            else if (a == "--mouse-interface" && i + 1 < argc) mouseInterface = argv[++i];   // amx, kempston, multiplay-a, multiplay-b
             else if (a == "--v9990-shot" && i + 1 < argc) { v9990Shot = argv[++i]; gfx9000 = true; }
             else if (a == "--video9000-shot" && i + 1 < argc) { video9000Shot = argv[++i]; gfx9000 = true; } }
         if (!shot.empty()) {
@@ -290,6 +293,7 @@ int main(int argc, char** argv) {
             EmuHost host; host.scanModels();
             loadMachineSounds();
             host.gateArrayPart = wantGa;
+            host.croGroup = croGroup;
             host.monitorHHold = monitorHHold; host.monitorVHold = monitorVHold;
             host.z80Cmos = z80Cmos;
             host.gx4000Ram128 = gx4000Ram128;
@@ -297,8 +301,10 @@ int main(int argc, char** argv) {
             host.monitorKnobs = monitorKnobs;
             host.monitorSetId = monitorSet;
             if (!m4Folder.empty()) { host.m4Enabled = true; host.m4Folder = m4Folder; }
+            if (!mouseInterface.empty()) host.mouseInterface = mouseInterface;
             if (sf2) host.symbifaceModule = "sf2";
             if (sf3) host.symbifaceModule = "sf3";
+            if (xmass) host.symbifaceModule = "xmass";
             if (multiface) host.multifaceEnabled = true;
             host.diskWriteBack = diskWriteBack;
             if (tapeFast == "off") host.tapeFastLoad = false;
@@ -348,7 +354,7 @@ int main(int argc, char** argv) {
                 std::string why;
                 if (!host.startRecording(recordPath, why)) { std::printf("[record] %s\n", why.c_str()); return 2; }
             }
-            if (!cartPath.empty()) { host.loadCartridgeFile(cartPath); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
+            if (!cartPath.empty()) { if (!host.loadCartridgeFile(cartPath) || diag) std::printf("[cart] %s\n", host.status.c_str()); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
             if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
             if (!recordTape.empty()) { host.tapeNewBlank(); host.tapeRecord(); }   // REC and PLAY down on a blank tape
@@ -388,7 +394,20 @@ int main(int argc, char** argv) {
                 if (!code.empty()) {
                     if (code[0] == 'r' && code.size() > 1 && code.find_first_not_of("0123456789", 1) == std::string::npos) {
                         run(std::atoi(code.c_str() + 1));               // r<N>: run N frames (no key)
-                    } else if (kb) { kb->setKey(code, true); run(6); kb->setKey(code, false); run(6); }
+                    } else if (kb) {
+                        // "ShiftLeft+Digit2": the keys of a token held together (a " after F1)
+                        std::vector<std::string> held;
+                        for (size_t s = 0; s <= code.size(); ) {
+                            size_t plus = code.find('+', s);
+                            held.push_back(code.substr(s, plus == std::string::npos ? std::string::npos : plus - s));
+                            if (plus == std::string::npos) break;
+                            s = plus + 1;
+                        }
+                        for (const std::string& h : held) kb->setKey(h, true);
+                        run(6);
+                        for (const std::string& h : held) kb->setKey(h, false);
+                        run(6);
+                    }
                 }
                 if (e == std::string::npos) break;
                 k = e + 1;
@@ -740,6 +759,7 @@ int main(int argc, char** argv) {
     host.serialLan      = geti("seriallan", 0) != 0;
     if (geti("serial", 0) != 0) { host.serialEnabled = true; host.connectSerial(); }   // fitted by applySettings during boot
     host.symbifaceModule = gets("symbiface", "none");
+    host.mouseInterface = gets("mouseinterface", "none");   // applied by applySettings (kept out while an SF2/SF3 is fitted)
     host.ideFolder = gets("idefolder", (homeDir() + "symide").c_str());   // the IDE's disc
     host.mouseSensitivity = level("mousesens", 1.0, 0.25, 4.0);
     host.lightgunType   = gets("lightgun", "none");       // these four are applied by applySettings
@@ -763,6 +783,7 @@ int main(int argc, char** argv) {
     host.beamRenderer   = geti("beam", 0) != 0;
     host.recordFormat   = gets("recordformat", "mjpeg") == "zmbv" ? "zmbv" : "mjpeg";
     host.stateDir       = homeDir() + "states";     // the quick save slots
+    host.ls3EepromFile  = homeDir() + "ls3eeprom.bin";   // LambdaSpeak 3's EEPROM
     host.recordDir      = homeDir() + "recordings";
     for (size_t i = EmuHost::RECENT_MAX; i-- > 0;) {
         const std::string r = gets(("recent." + std::to_string(i)).c_str(), "");
@@ -884,8 +905,8 @@ int main(int argc, char** argv) {
             if (ev.type == SDL_WINDOWEVENT && ev.window.event == SDL_WINDOWEVENT_CLOSE &&
                 ev.window.windowID == SDL_GetWindowID(window)) running = false;
             if (ev.type == SDL_DROPFILE && ev.drop.file) { host.loadByExtension(ev.drop.file); SDL_free(ev.drop.file); }
-            // While grabbed, the host mouse is the Symbiface mouse.
-            if (host.mouseCaptured && !host.symbifaceMouseActive()) releaseMouse();
+            // While grabbed, the host mouse is the CPC's mouse (a Symbiface or a mouse interface).
+            if (host.mouseCaptured && !host.emulatedMouseActive()) releaseMouse();
             if (host.mouseCaptured && mouseEvent) {
                 if (ev.type == SDL_MOUSEMOTION) host.mouseMove((float)ev.motion.xrel, (float)ev.motion.yrel);
                 else if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_MIDDLE) releaseMouse();
@@ -1069,6 +1090,7 @@ int main(int argc, char** argv) {
             f << "serialtarget=" << host.serialTarget << "\n";
             f << "seriallan=" << (host.serialLan ? 1 : 0) << "\n";
             f << "symbiface=" << host.symbifaceModule << "\n";
+            f << "mouseinterface=" << host.mouseInterface << "\n";
             f << "idefolder=" << host.ideFolder << "\n";
             f << "mousesens=" << host.mouseSensitivity << "\n";
             f << "lightgun=" << host.lightgunType << "\n";

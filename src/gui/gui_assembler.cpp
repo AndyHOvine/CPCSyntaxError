@@ -67,27 +67,52 @@ std::string AssemblerWindow::displayName() const {
 
 static int countLines(const std::string& s) { return 1 + (int)std::count(s.begin(), s.end(), '\n'); }
 
+static bool readText(const std::string& p, std::string& text) {
+    std::ifstream f(p, std::ios::binary);
+    if (!f) return false;
+    std::stringstream ss; ss << f.rdbuf();
+    text = ss.str();
+    text.erase(std::remove(text.begin(), text.end(), '\r'), text.end());
+    return true;
+}
+
+static std::string canonical(const std::string& p) {
+    std::error_code ec;
+    std::filesystem::path c = std::filesystem::weakly_canonical(std::filesystem::path(p), ec);
+    std::string s = (ec ? std::filesystem::path(p) : c).generic_string();
+#if defined(_WIN32)
+    for (char& ch : s) ch = (char)std::tolower((unsigned char)ch);
+#endif
+    return s;
+}
+
 void AssemblerWindow::newFile() {
     source = SAMPLE_SOURCE;
     sourceRevision++;
     path.clear();
     modified = false;
     lineCount = countLines(source);
+    tabs.assign(1, Tab{});
+    activeTab = 0; selectTab = 0;
     messages.clear(); errorLines.clear();
 }
 
+// Opening a file makes it the main file: its tab first, then a tab for each file it links,
+// and each of theirs.
 void AssemblerWindow::openFile(const std::string& p) {
-    std::ifstream f(p, std::ios::binary);
-    if (!f) { summary = "Cannot open " + p; return; }
-    std::stringstream ss; ss << f.rdbuf();
-    source = ss.str();
-    source.erase(std::remove(source.begin(), source.end(), '\r'), source.end());
+    std::string text;
+    if (!readText(p, text)) { summary = "Cannot open " + p; return; }
+    source = text;
     sourceRevision++;
     path = p;
     modified = false;
     lineCount = countLines(source);
+    tabs.assign(1, Tab{});
+    activeTab = 0; selectTab = 0;
     messages.clear(); errorLines.clear();
+    openLinked(source, path, 0);
     summary = "Opened " + p;
+    if (tabs.size() > 1) summary += " and " + std::to_string(tabs.size() - 1) + " linked file" + (tabs.size() == 2 ? "" : "s");
 }
 
 void AssemblerWindow::saveFile(const std::string& p) {
@@ -96,6 +121,111 @@ void AssemblerWindow::saveFile(const std::string& p) {
     path = p;
     modified = false;
     summary = "Saved " + p;
+    if (activeTab == 0) openLinked(source, path, 0);     // a new INCLUDE opens its file
+}
+
+// The files a source links: INCLUDE "name" and READ "name" (rasm's two for source; INCBIN
+// is binary and gets no tab). A name is looked for beside the file that names it, then
+// beside the main file, because rasm assembles in the main file's folder.
+std::vector<std::string> AssemblerWindow::linkedFiles(const std::string& text, const std::string& fromPath) const {
+    namespace fs = std::filesystem;
+    std::vector<std::string> found;
+    const fs::path fromDir = fromPath.empty() ? fs::path() : fs::path(fromPath).parent_path();
+    const std::string mainPath = activeTab == 0 ? path : (tabs.empty() ? std::string() : tabs[0].path);
+    const fs::path mainDir = mainPath.empty() ? fs::path() : fs::path(mainPath).parent_path();
+    std::istringstream in(text);
+    std::string line;
+    while (std::getline(in, line)) {
+        // the code part of the line: up to a ; or // outside quotes
+        std::string code;
+        bool quoted = false;
+        for (size_t i = 0; i < line.size(); i++) {
+            const char c = line[i];
+            if (c == '"') quoted = !quoted;
+            if (!quoted && (c == ';' || (c == '/' && i + 1 < line.size() && line[i + 1] == '/'))) break;
+            code += c;
+        }
+        std::string upper = code;
+        for (char& c : upper) c = (char)std::toupper((unsigned char)c);
+        for (const char* word : { "INCLUDE", "READ" }) {
+            const size_t wordLength = std::string(word).size();
+            size_t at = upper.find(word);
+            while (at != std::string::npos) {
+                const size_t end = at + wordLength;
+                const bool startOk = at == 0 || !(std::isalnum((unsigned char)upper[at - 1]) || upper[at - 1] == '_' || upper[at - 1] == '.');
+                const bool endOk = end >= upper.size() || std::isspace((unsigned char)upper[end]) || upper[end] == '"';
+                if (startOk && endOk) {
+                    const size_t q1 = code.find('"', end);
+                    const size_t q2 = q1 == std::string::npos ? q1 : code.find('"', q1 + 1);
+                    if (q2 != std::string::npos) {
+                        const std::string name = code.substr(q1 + 1, q2 - q1 - 1);
+                        std::error_code ec;
+                        fs::path candidate = fromDir / name;
+                        if (!fs::exists(candidate, ec)) candidate = mainDir / name;
+                        if (fs::is_regular_file(candidate, ec)) found.push_back(candidate.string());
+                    }
+                }
+                at = upper.find(word, at + 1);
+            }
+        }
+    }
+    return found;
+}
+
+void AssemblerWindow::openLinked(const std::string& text, const std::string& fromPath, int depth) {
+    if (depth > 16) return;                              // a file that includes itself
+    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    for (const std::string& file : linkedFiles(text, fromPath)) {
+        if (!mainPath.empty() && canonical(file) == canonical(mainPath)) continue;
+        if (tabFor(file) >= 0) continue;
+        Tab tab;
+        if (!readText(file, tab.source)) continue;
+        tab.path = file;
+        tab.lineCount = countLines(tab.source);
+        tabs.push_back(tab);
+        const std::string linkedText = tab.source;
+        openLinked(linkedText, file, depth + 1);
+    }
+}
+
+int AssemblerWindow::tabFor(const std::string& file) const {
+    namespace fs = std::filesystem;
+    if (file.empty()) return -1;
+    std::vector<std::string> wanted = { canonical(file) };
+    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    if (!mainPath.empty() && fs::path(file).is_relative()) wanted.push_back(canonical((fs::path(mainPath).parent_path() / file).string()));
+    for (size_t i = 0; i < tabs.size(); i++) {
+        const std::string p = (int)i == activeTab ? path : tabs[i].path;
+        if (p.empty()) continue;
+        const std::string c = canonical(p);
+        for (const std::string& w : wanted) if (c == w) return (int)i;
+    }
+    return -1;
+}
+
+void AssemblerWindow::storeActive() {
+    if (activeTab < 0 || activeTab >= (int)tabs.size()) return;
+    Tab& t = tabs[(size_t)activeTab];
+    t.source = source; t.path = path; t.modified = modified; t.lineCount = lineCount;
+}
+
+void AssemblerWindow::showTab(int index) {
+    if (index < 0 || index >= (int)tabs.size() || index == activeTab) return;
+    storeActive();
+    // an editor with the focus keeps its own copy of the text and would write it back over
+    // the new tab's
+    if (ImGui::GetCurrentContext()) ImGui::ClearActiveID();
+    activeTab = index;
+    const Tab& t = tabs[(size_t)index];
+    source = t.source; path = t.path; modified = t.modified; lineCount = t.lineCount;
+    sourceRevision++;
+    refreshErrorLines();
+}
+
+// The gutter marks the errors of the tab on show.
+void AssemblerWindow::refreshErrorLines() {
+    errorLines.clear();
+    for (const Message& m : messages) if (m.tab == activeTab && m.line > 0) errorLines.insert(m.line);
 }
 
 void AssemblerWindow::requestOpen() {
@@ -135,7 +265,7 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
 void AssemblerWindow::saveSettings(std::ostream& out) const {
     out << "asm_syntax=" << syntax << "\n";
     out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
-    out << "asm_file=" << path << "\n";
+    out << "asm_file=" << (activeTab == 0 || tabs.empty() ? path : tabs[0].path) << "\n";   // the main file: it brings its links
     out << "asm_highlight=" << (highlight ? 1 : 0) << "\n";
     for (size_t k = 0; k < colours.size(); k++) {
         char hex[8];
@@ -245,13 +375,29 @@ static std::string cleanMessage(const char* raw, int length) {
 void AssemblerWindow::assemble(bool thenRun) {
     namespace fs = std::filesystem;
     std::error_code ec;
-    // INCLUDE / INCBIN / SAVE resolve against the source's own folder, as from the command line.
+    // rasm reads the linked files from disk: an edited tab is saved first, so it assembles
+    // what is on show. The main file goes in from its tab, saved or not.
+    storeActive();
+    std::string notSaved;
+    for (size_t i = 1; i < tabs.size(); i++) {
+        Tab& t = tabs[i];
+        if (!t.modified || t.path.empty()) continue;
+        std::string why;
+        if (writeFileSafely(t.path, t.source.data(), t.source.size(), &why)) {
+            t.modified = false;
+            if ((int)i == activeTab) modified = false;
+        } else notSaved += " " + fs::path(t.path).filename().string();
+    }
+    const std::string mainSource = activeTab == 0 ? source : tabs[0].source;
+    const std::string mainPath = activeTab == 0 ? path : tabs[0].path;
+    // INCLUDE / INCBIN / SAVE resolve against the main file's own folder, as from the command line.
     fs::path previous = fs::current_path(ec);
-    if (!path.empty()) fs::current_path(fs::path(path).parent_path(), ec);
+    if (!mainPath.empty()) fs::current_path(fs::path(mainPath).parent_path(), ec);
 
     unsigned char* out = nullptr; int outLength = 0; s_rasm_info* info = nullptr; int fatal = 0;
-    int ret = rasm_bridge_assemble(source.data(), (int)source.size(), syntax, &out, &outLength, &info, &fatal);
+    int ret = rasm_bridge_assemble(mainSource.data(), (int)mainSource.size(), syntax, &out, &outLength, &info, &fatal);
     fs::current_path(previous, ec);
+    openLinked(mainSource, mainPath, 0);                // a file linked since it was opened
 
     messages.clear(); errorLines.clear(); symbols.clear();
     lastOk = false; lastStart = -1; lastRun = -1; lastLength = 0;
@@ -264,7 +410,7 @@ void AssemblerWindow::assemble(bool thenRun) {
             // The editor's text is fed to rasm as a stream; its "file" is the current
             // directory. Anything else came from an INCLUDE.
             m.inEditor = m.file.empty() || m.file == "<internal>" || m.file.back() == '/' || m.file.back() == '\\';
-            if (m.inEditor && m.line > 0) errorLines.insert(m.line);
+            m.tab = m.inEditor ? 0 : tabFor(m.file);
             messages.push_back(m);
         }
         for (int i = 0; i < info->nbsymbol; i++)
@@ -275,6 +421,8 @@ void AssemblerWindow::assemble(bool thenRun) {
     if (fatal) {
         Message m; m.text = "rasm stopped (fatal error " + std::to_string(fatal) + ")"; messages.push_back(m);
     }
+    if (!notSaved.empty()) { Message m; m.text = "Could not save before assembling:" + notSaved; messages.push_back(m); }
+    refreshErrorLines();
     lastLength = outLength;
 
     if (ret == 0 && !fatal) {
@@ -372,6 +520,29 @@ void AssemblerWindow::draw(bool* open) {
         file.textDisabled(n);
     }
 
+    // ---- the open files, a tab each (the first is the main file, the one assembled)
+    if (selectTab >= 0) showTab(selectTab);
+    if (ImGui::BeginTabBar("##asmfiles", ImGuiTabBarFlags_FittingPolicyScroll)) {
+        for (int i = 0; i < (int)tabs.size(); i++) {
+            const std::string& p = i == activeTab ? path : tabs[(size_t)i].path;
+            const bool changed = i == activeTab ? modified : tabs[(size_t)i].modified;
+            std::string label = p.empty() ? std::string("untitled.asm") : std::filesystem::path(p).filename().string();
+            if (changed) label += " *";
+            label += "###asmtab" + std::to_string(i);
+            const ImGuiTabItemFlags flags = selectTab == i ? ImGuiTabItemFlags_SetSelected : 0;
+            const bool shown = ImGui::BeginTabItem(label.c_str(), nullptr, flags);
+            if (ImGui::IsItemHovered())
+                ImGui::SetTooltip("%s", i == 0 ? "The main file: F9 assembles it, with the files it links"
+                                               : "A linked file (INCLUDE / READ): F9 saves it if edited, then assembles the main file");
+            if (shown) {
+                if (i != activeTab && selectTab < 0) showTab(i);
+                ImGui::EndTabItem();
+            }
+        }
+        ImGui::EndTabBar();
+    }
+    selectTab = -1;
+
     // ---- editor with a line-number gutter
     const ImGuiStyle& style = ImGui::GetStyle();
     const float lineH = ImGui::GetTextLineHeight();
@@ -440,7 +611,7 @@ void AssemblerWindow::draw(bool* open) {
                 if (m.line > 0) std::snprintf(line, sizeof(line), "%s%d: %s", m.inEditor ? "line " : (m.file + ":").c_str(), m.line, m.text.c_str());
                 else std::snprintf(line, sizeof(line), "%s", m.text.c_str());
                 ImGui::PushID((int)i);
-                if (ImGui::Selectable(line) && m.inEditor && m.line > 0) gotoLine = m.line;
+                if (ImGui::Selectable(line) && m.tab >= 0 && m.line > 0) { selectTab = m.tab; gotoLine = m.line; }
                 ImGui::PopID();
             }
             if (messages.empty()) ImGui::TextDisabled(lastOk ? "No errors, no warnings." : "Assemble with F9.");

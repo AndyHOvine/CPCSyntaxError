@@ -387,10 +387,29 @@ void GuiShell::sectionInput(bool asMenu) {
     ImGui::SetNextItemWidth(itemWidth(asMenu));
     if (ImGui::SliderFloat("##sens", &sens, 0.1f, 4.0f, "mouse sensitivity %.2f")) host.setMouseSensitivity(sens);
 
+    // THE MOUSE INTERFACE: one at a time, and none while a Symbiface II/III brings its own.
+    static const Choice mice[] = {
+        { "None##mouse", "none", nullptr },
+        { "AMX mouse", "amx", "On the joystick port (AMX Art and others): a pulse on a joystick\n"
+                              "direction for each step, its buttons on the fire lines" },
+        { "Kempston mouse", "kempston", "Counters at &FBEE (X) and &FBEF (Y), buttons at &FAEF\n(OCP Art Studio, Carrier Command)" },
+        { "MultiPlay, port A", "multiplay-a", "TotO's MultiPlay, the mouse in its port A (&F990, &F992/&F993)" },
+        { "MultiPlay, port B", "multiplay-b", "TotO's MultiPlay, the mouse in its port B (&F991, &F994/&F995)" } };
+    const bool sfMouse = host.symbifaceModule == "sf2" || host.symbifaceModule == "sf3";
+    auto mouseItems = [&](bool menu) {
+        ImGui::BeginDisabled(sfMouse);
+        choiceRow(menu, mice, host.mouseInterface, [this](const char* v) { host.setMouseInterface(v); });
+        ImGui::EndDisabled();
+        if (sfMouse) ImGui::TextDisabled("Off: the Symbiface %s has its own mouse", host.symbifaceModule == "sf2" ? "II" : "III");
+        else if (host.mouseInterfaceActive()) ImGui::TextDisabled("Click the picture to use the mouse; F12 or the middle button lets it go.");
+    };
     if (asMenu) {
         ImGui::Separator();
+        if (ImGui::BeginMenu("Mouse interface")) { mouseItems(true); ImGui::EndMenu(); }
         if (ImGui::BeginMenu("Lightgun")) { lightgunItems(true); ImGui::EndMenu(); }
     } else {
+        sectionHeading("Mouse interface");
+        mouseItems(false);
         sectionHeading("Lightgun");
         lightgunItems(false);
     }
@@ -540,7 +559,8 @@ void GuiShell::sectionExpansions(bool asMenu) {
     }
 
     static const Choice sf[] = { { "Off", "none", nullptr }, { "SF2", "sf2", "Symbiface II: PS/2 mouse, RTC, IDE/CF" },
-                                 { "SF3", "sf3", "Symbiface III: USB mouse, RTC, IDE/CF" } };
+                                 { "SF3", "sf3", "Symbiface III: USB mouse, RTC, IDE/CF" },
+                                 { "X-MASS", "xmass", "X-MASS: the IDE/CF interface alone (&FD08-&FD0F)" } };
     auto pickSf = [this](const char* v) { host.setSymbiface(v); };
     auto pickIde = [this]() {
         browser.openDir("Symbiface IDE folder", host.ideFolder.empty() ? host.romDir : host.ideFolder,
@@ -557,7 +577,7 @@ void GuiShell::sectionExpansions(bool asMenu) {
             ImGui::EndMenu();
         }
     } else {
-        sectionHeading("Symbiface (mouse, RTC, IDE/CF)");
+        sectionHeading("Symbiface / X-MASS (mouse, RTC, IDE/CF)");
         choiceRow(false, sf, host.symbifaceModule, pickSf);
         ImGui::TextUnformatted("IDE disc");
         if (after().smallButton("Folder...##ide")) pickIde();
@@ -1109,7 +1129,7 @@ void GuiShell::windowGfx9000() {
             const ImVec2 at = ImGui::GetCursorScreenPos();
             drawGfxMonitor(ImGui::GetWindowDrawList(), at.x + (avail.x - w) * 0.5f, at.y, w, h);
             ImGui::InvisibleButton("##gfxarea", ImVec2(std::max(1.0f, avail.x), h));
-            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.symbifaceMouseActive() && !host.mouseCaptured)
+            if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.emulatedMouseActive() && !host.mouseCaptured)
                 mouseCaptureRequested = true;      // its picture grabs the mouse too
             if (const V9990Picture* pic = host.v9990Picture())
                 ImGui::TextDisabled("%s, %d x %d, field %lld", v9990ModeName(pic->mode), pic->width, pic->height, pic->fields);
@@ -1404,7 +1424,7 @@ void GuiShell::sectionDevelopment(bool asMenu) {
         ImGui::SetNextItemWidth(-ImGui::GetFontSize() * 6);
         ImGui::InputTextWithHint("##path", ".bin, .sna, .dsk, .cpr or a tape", devWatchPath, sizeof(devWatchPath));
         if (after().smallButton("Browse..."))
-            browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".hfe", ".cpr", ".cdt", ".tzx", ".wav" },
+            browser.open("File to watch", host.mediaDir, { ".bin", ".sna", ".dsk", ".hfe", ".cpr", ".cro", ".cdt", ".tzx", ".wav" },
                          [this](const std::string& p) { std::snprintf(devWatchPath, sizeof(devWatchPath), "%s", p.c_str()); });
         fitNextItemWidth(ImGui::GetFontSize() * 7, "Load at");
         ImGui::InputTextWithHint("Load at", "header", devWatchAddr, sizeof(devWatchAddr));

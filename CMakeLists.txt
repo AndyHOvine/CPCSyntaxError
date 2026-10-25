@@ -95,7 +95,7 @@ target_link_libraries(cpcse-core PUBLIC capsimage)
 find_package(Threads REQUIRED)
 target_link_libraries(cpcse-core PUBLIC Threads::Threads)
 if(WIN32)
-  target_link_libraries(cpcse-core PUBLIC ws2_32 sapi ole32 uuid)
+  target_link_libraries(cpcse-core PUBLIC ws2_32 sapi ole32 uuid winmm)   # winmm: the host MIDI out (host_midi)
 endif()
 
 # --------------------------------------------------------------- SDL2

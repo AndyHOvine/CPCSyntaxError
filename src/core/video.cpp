@@ -828,6 +828,27 @@ void CpcVideo::render() {
                     std::fprintf(stderr, "[c%d m%d<-%d@%d] ", seg.character, seg.mode,
                                  seg.modeBefore, seg.modeSwitchPixel);
                 std::fprintf(stderr, "\n");
+                // Plus: each segment's soft-scroll register and its first palette entries
+                // (a line that comes out in the wrong colours shows which change made it).
+                if (!state->segments.empty() && !state->segments[0].palette.empty()) {
+                    std::fprintf(stderr, "ROWPAL %d: line ssc=%02x pal=%03x,%03x,%03x border=%03x |", monitorY,
+                                 state->extendBorder & 0xff, state->palette.size() > 2 ? state->palette[0] : -1,
+                                 state->palette.size() > 2 ? state->palette[1] : -1, state->palette.size() > 2 ? state->palette[2] : -1,
+                                 state->palette.size() > 16 ? state->palette[16] : -1);
+                    for (const auto& seg : state->segments)
+                        std::fprintf(stderr, " c%d ssc=%02x pal=%03x,%03x,%03x border=%03x", seg.character, seg.extendBorder & 0xff,
+                                     seg.palette[0], seg.palette[1], seg.palette[2], seg.palette.size() > 16 ? seg.palette[16] : -1);
+                    std::fprintf(stderr, "\n");
+                    // ...and the sprites' Y and magnification (ASIC &6000 + 8n + 2/3, &6004 + 8n)
+                    auto sprites = [&](const Bytes& a, const std::vector<int>& mag) {
+                        for (int n = 0; n < 16 && 8 * n + 4 < (int)a.size(); n++)
+                            std::fprintf(stderr, " %d:%d/%x", n, (a[8 * n + 2] | a[8 * n + 3] << 8) & 0x1ff, n < (int)mag.size() ? mag[n] : -1);
+                    };
+                    std::fprintf(stderr, "ROWSPR %d: line", monitorY);
+                    sprites(state->spriteAttributes, state->spriteMagnification);
+                    for (const auto& seg : state->segments) { std::fprintf(stderr, " | c%d", seg.character); sprites(seg.spriteAttributes, seg.spriteMagnification); }
+                    std::fprintf(stderr, "\n");
+                }
             }
         }
         // The two §9.2.2 hooks are the CRTC profile's, asked of the chip exactly as the
@@ -1037,7 +1058,13 @@ void CpcVideo::drawSpriteChunk(const RasterLine* state, const SpriteState& sprit
         if (!magX || !magY) continue;
         static const int sc[4] = { 1, 1, 2, 4 };
         int sx = sc[magX], sy = sc[magY];
-        int spriteLine = state ? (state->verticalAdjust ? 0 : (((state->verticalCounter & 0x3f) << 3) | (state->rasterCounter & 7))) : displayY;
+        // The line displayed in the record, from its C0=0 (displayedLine): the record's own
+        // counters are the line before it, which drew every sprite one line low. Sonic's
+        // title (GX4000) has its logo sprites start on the split screen's first line; one
+        // line low, that line showed the bitmap's pen 0, a black line across the logo.
+        int spriteLine = !state ? displayY
+            : state->displayedLine >= 0 ? (state->displayedLineAdjust ? 0 : state->displayedLine)
+            : (state->verticalAdjust ? 0 : (((state->verticalCounter & 0x3f) << 3) | (state->rasterCounter & 7)));
         int relativeY = (spriteLine - position.y) & 0x1ff;
         if (relativeY >= 16 * sy) continue;
         int sourceRow = relativeY / sy;                  // both non-negative

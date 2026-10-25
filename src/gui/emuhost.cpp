@@ -226,6 +226,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     }
     flushDisks();
     timelineEpoch += 1;                   // a new machine: the timeline starts again
+    if (!croBoot) { croSet = CroRomSet{}; croGroupLabels.clear(); croGroupNumbers.clear(); }
     ModelProfile& m = models[index];
     if (index != currentModel) { osRomPath.clear(); basicRomPath.clear(); amsdosRomPath.clear(); }  // different model → different firmware
 
@@ -316,6 +317,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     std::string basicPath = !basicRomPath.empty() ? basicRomPath : findRom(m.basicKey);
     if (osPath.empty() || basicPath.empty()) { status = "ROMs for " + m.label + " not found in " + romDir; return false; }
     Bytes lowerRom = readFile(osPath, ok1);
+    if (!croSet.lower.empty()) lowerRom = croSet.lower;   // a CRO's ROM_LOW is the OS
     Bytes basicRom = readFile(basicPath, ok2);
     Bytes amsdosRom;
     std::string amsPath;
@@ -343,7 +345,7 @@ bool EmuHost::bootModel(int index, int ram, int crtc) {
     applySettings();
     // applySettings() fitted the M4 ROM (if enabled) AFTER loadClassicFirmware's
     // reset; reset once more so the firmware scans it and registers its RSX.
-    if (m4Enabled && !emu->plusHardware) emu->reset();
+    if (m4Enabled && (!emu->plusHardware || emu->plusComputer)) emu->reset();
 
     // A different machine may have come with a different set (ACCC 15.1: a Plus got a
     // CM14, a CRTC 4 a CTM calibrated like one), so re-take it unless one was chosen.
@@ -369,6 +371,7 @@ void EmuHost::applySettings() {
     applyMultiface();
     applySerial();
     applySymbiface();
+    applyMouseInterface();
     applyLightgun();
     applyTapeOptions();
     if (emu->v9990) emu->v9990->setEnabled(v9990Enabled);
@@ -390,6 +393,8 @@ std::string EmuHost::multifaceRom() const {
 
 void EmuHost::applyMultiface() {
     if (!emu || !emu->multiface) return;
+    // A CRO's ROM_MF2 is a Multiface fitted with that ROM.
+    if (!croSet.mf2.empty() && !emu->plusHardware) { emu->multiface->setEnabled(emu->multiface->setRom(croSet.mf2)); return; }
     if (!multifaceEnabled || emu->plusHardware) { emu->multiface->setEnabled(false); return; }
     bool ok = false;
     const Bytes rom = readFile(multifaceRom(), ok);
@@ -462,7 +467,7 @@ void EmuHost::applyM4Network() {
 void EmuHost::applyM4() {
     applyM4Network();
     if (!m4Enabled || !emu || !emu->m4 || !emu->memory) return;
-    if (emu->plusHardware) return;                 // M4 is a classic-CPC device
+    if (emu->plusHardware && !emu->plusComputer) return;   // the GX4000 has no expansion port
     std::string romPath = findRom("m4rom");
     if (romPath.empty()) romPath = findRom("m4");
     bool ok = false; Bytes rom = readFile(romPath, ok);
@@ -476,7 +481,7 @@ void EmuHost::applyM4() {
 bool EmuHost::setM4(bool enabled, const std::string& folder) {
     if (!emu || !emu->m4 || !emu->memory) return false;
     if (enabled) {
-        if (emu->plusHardware) { status = "M4 needs a classic CPC (not Plus/GX4000)."; return false; }
+        if (emu->plusHardware && !emu->plusComputer) { status = "The GX4000 has no expansion port for the M4."; return false; }
         std::string romPath = findRom("m4rom");
         if (romPath.empty()) romPath = findRom("m4");
         bool ok = false; Bytes rom = readFile(romPath, ok);
@@ -506,13 +511,15 @@ void EmuHost::rescanM4() {
 
 void EmuHost::applySymbiface() {
     if (!emu) return;
-    bool sf2 = symbifaceModule == "sf2", sf3 = symbifaceModule == "sf3";
+    bool sf2 = symbifaceModule == "sf2", sf3 = symbifaceModule == "sf3", xmass = symbifaceModule == "xmass";
     if (emu->symbifaceMouse) { emu->symbifaceMouse->setEnabled(sf2); emu->symbifaceMouse->setSensitivity(mouseSensitivity); }
     if (emu->sf2Rtc) emu->sf2Rtc->setEnabled(sf2);       // its DS12887 clock at &FD14/&FD15
     if (emu->sf3) { emu->sf3->setEnabled(sf3); emu->sf3->setSensitivity(mouseSensitivity); }
     if (emu->ide) {
-        // Both cards carry the IDE/CF interface at &FD06-&FD0F.
-        if ((sf2 || sf3) && !ideFolder.empty()) {
+        // Both Symbifaces carry the IDE/CF interface at &FD06-&FD0F; the X-MASS is that
+        // interface alone, at &FD08-&FD0F.
+        emu->ide->xmass = xmass;
+        if ((sf2 || sf3 || xmass) && !ideFolder.empty()) {
             namespace fs = std::filesystem;
             std::error_code ec;
             const fs::path p = fs::u8path(ideFolder);
@@ -533,9 +540,36 @@ void EmuHost::rescanIde() {
     if (emu && emu->ide && emu->ide->enabled) { emu->ide->rescan(); status = "IDE folder rescanned"; }
 }
 
+bool EmuHost::mouseInterfaceActive() const {
+    return mouseInterface != "none" && symbifaceModule != "sf2" && symbifaceModule != "sf3";
+}
+
+void EmuHost::applyMouseInterface() {
+    if (!emu || !emu->keyboard) return;
+    const std::string k = mouseInterfaceActive() ? mouseInterface : "none";
+    emu->keyboard->amxEnabled = k == "amx";
+    if (k != "amx") { emu->keyboard->amxLines = 0xff; emu->keyboard->amxMoveX = emu->keyboard->amxMoveY = 0; }
+    const int kind = k == "kempston" ? MouseInterface::Kempston : k == "multiplay-a" ? MouseInterface::MultiplayA
+                   : k == "multiplay-b" ? MouseInterface::MultiplayB : MouseInterface::None;
+    if (emu->mouseIf.kind != kind) { emu->mouseIf = MouseInterface{}; emu->mouseIf.kind = kind; }
+}
+
+void EmuHost::setMouseInterface(const std::string& kind) {
+    mouseInterface = (kind == "amx" || kind == "kempston" || kind == "multiplay-a" || kind == "multiplay-b") ? kind : "none";
+    applyMouseInterface();
+    static const std::pair<const char*, const char*> names[] = {
+        { "amx", "AMX mouse (joystick port)" }, { "kempston", "Kempston mouse" },
+        { "multiplay-a", "MultiPlay, mouse in port A" }, { "multiplay-b", "MultiPlay, mouse in port B" } };
+    std::string name = "none";
+    for (const auto& n : names) if (mouseInterface == n.first) name = n.second;
+    status = "Mouse interface: " + name;
+    if (mouseInterface != "none" && !mouseInterfaceActive()) status += " (off while the Symbiface's own mouse is fitted)";
+}
+
 void EmuHost::setSymbiface(const std::string& module) {
     symbifaceModule = module;
     applySymbiface();
+    applyMouseInterface();                 // a Symbiface II/III's mouse keeps the interface out
     status = "Symbiface: " + (module == "none" ? std::string("off") : module);
 }
 
@@ -556,12 +590,26 @@ void EmuHost::mouseMove(float dx, float dy) {
     if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseMove; e.x = dx; e.y = dy; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->move(dx, dy);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->move(dx, dy);
+    else if (mouseInterfaceActive() && emu && emu->keyboard) {
+        // whole counts to the interface, the fractions kept for the next move
+        mouseFracX += dx * mouseSensitivity;
+        mouseFracY += dy * mouseSensitivity;
+        const int ix = (int)mouseFracX, iy = (int)mouseFracY;
+        mouseFracX -= ix; mouseFracY -= iy;
+        if (ix == 0 && iy == 0) return;
+        if (mouseInterface == "amx") emu->keyboard->amxMove(ix, iy);
+        else emu->mouseIf.move(ix, iy);
+    }
 }
 void EmuHost::mouseButton(int index, bool pressed) {
     if (liveInputBlocked()) return;
     if (!applyingInput) { InputEvent e; e.kind = InputEvent::MouseButton; e.a = index; e.b = pressed ? 1 : 0; timelineLog(e); }
     if (symbifaceModule == "sf2" && emu && emu->symbifaceMouse) emu->symbifaceMouse->button(index, pressed);
     else if (symbifaceModule == "sf3" && emu && emu->sf3) emu->sf3->button(index, pressed);
+    else if (mouseInterfaceActive() && emu && emu->keyboard) {
+        if (mouseInterface == "amx") emu->keyboard->amxButton(index, pressed);
+        else emu->mouseIf.button(index, pressed);
+    }
 }
 void EmuHost::mouseScroll(float delta) {
     if (liveInputBlocked()) return;
@@ -573,6 +621,7 @@ void EmuHost::mouseScroll(float delta) {
 void EmuHost::applyExpansionRoms() {
     if (!emu || !emu->memory) return;
     for (const auto& r : expansionRoms) emu->memory->setUpperRom(r.slot, r.data);
+    if (!emu->plusHardware) for (const auto& r : croSet.upper) emu->memory->setUpperRom(r.first, r.second);   // a CRO's ROM_HIGH
 }
 
 bool EmuHost::fitExpansionRom(int slot, const std::string& path) {
@@ -709,6 +758,7 @@ void EmuHost::applySpeech() {
               : speechKind == "dktronics" ? SpeechSynth::Kind::DkTronics
               : speechKind == "lambdaspeak3" ? SpeechSynth::Kind::LambdaSpeak3 : SpeechSynth::Kind::None);
     s.mp3.card = mp3Card;
+    if (s.kind == SpeechSynth::Kind::LambdaSpeak3 && s.eepromPath != ls3EepromFile) s.setEepromFile(ls3EepromFile);
     if (s.kind != SpeechSynth::Kind::None && !s.hasRom) {
         const std::string path = findRom("sp0256 al2");
         bool ok = false;
@@ -836,7 +886,7 @@ void EmuHost::setAnalogue(int channel, int value) {
 bool EmuHost::loadByExtension(const std::string& path) {
     std::string ext;
     { auto e = std::filesystem::path(path).extension().string(); for (char c : e) ext += (char)std::tolower((unsigned char)c); }
-    if (ext == ".cpr") return loadCartridgeFile(path);
+    if (ext == ".cpr" || ext == ".cro") return loadCartridgeFile(path);
     if (ext == ".dsk" || ext == ".edsk" || ext == ".hfe" || ext == ".ipf") return loadDiskFile(path, 0);
     if (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") return loadTapeFile(path);
     if (ext == ".sna") return loadSnapshot(path);
@@ -883,8 +933,50 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     // The readers throw for a file they cannot take: a bad file is a message, not the end
     // of the program.
     Cartridge cart;
-    try { cart = parseCartridge(data); }
-    catch (const std::exception& ex) { status = std::string("Not a valid .CPR cartridge: ") + ex.what(); return false; }
+    std::string croWhat;                  // the CRO group, for the status line
+    if (isCro(data)) {
+        std::vector<CroGroup> groups;
+        try { groups = parseCro(data); }
+        catch (const std::exception& ex) { status = std::string("Not a valid .CRO file: ") + ex.what(); return false; }
+        int pick = croDefaultGroup(groups);
+        std::string missing;
+        if (croGroup >= 0) {
+            int want = -1;
+            for (int i = 0; i < (int)groups.size(); i++) if (groups[i].number == (uint32_t)croGroup) want = i;
+            if (want >= 0) pick = want;
+            else missing = "; it has no group " + std::to_string(croGroup);
+        }
+        std::vector<std::string> labels;
+        std::vector<uint32_t> numbers;
+        for (const CroGroup& g : groups) {
+            labels.push_back(std::to_string(g.number) + (g.label.empty() ? "" : ": " + g.label));
+            numbers.push_back(g.number);
+        }
+        const CroGroup& g = groups[(size_t)pick];
+        croWhat = " (CRO group " + labels[(size_t)pick] + missing + ")";
+        if (!g.hasBankable()) {
+            CroRomSet set;
+            for (const CroRom& r : g.roms) {
+                if (r.type == CRO_ROM_LOW) set.lower = r.data;
+                else if (r.type == CRO_ROM_HIGH && r.logical <= 255) set.upper.push_back({ (int)r.logical, r.data });
+                else if (r.type == CRO_ROM_MF2) set.mf2 = r.data;
+            }
+            if (set.lower.empty() && set.upper.empty() && set.mf2.empty()) { status = "The CRO group " + labels[(size_t)pick] + " holds no ROM this emulator knows."; return false; }
+            if (!loadCroRomSet(set, path, croWhat)) return false;
+            croGroupLabels = labels;
+            croGroupNumbers = numbers;
+            return true;
+        }
+        try { cart = croCartridge(g); }
+        catch (const std::exception& ex) { status = std::string("Not a valid .CRO cartridge: ") + ex.what(); return false; }
+        croSet = CroRomSet{};
+        croGroupLabels = labels;
+        croGroupNumbers = numbers;
+    } else {
+        croGroupLabels.clear(); croGroupNumbers.clear(); croSet = CroRomSet{};
+        try { cart = parseCartridge(data); }
+        catch (const std::exception& ex) { status = std::string("Not a valid .CPR cartridge: ") + ex.what(); return false; }
+    }
     if (cart.banks.empty()) { status = "Not a valid .CPR cartridge."; return false; }
     // Respect the selected machine: a 464/6128 Plus keeps its computer identity
     // (keyboard, RAM, disc); otherwise the cart runs as the selected console, or
@@ -917,8 +1009,37 @@ bool EmuHost::loadCartridgeFile(const std::string& path) {
     loadCheatsBeside(path);
     snapshotName.clear();
     paused = false;
-    status = "Loaded " + cartName + " into " + m.label;
+    status = "Loaded " + cartName + croWhat + " into " + m.label;
     return true;
+}
+
+// A CRO group of CPC ROMs: a classic CPC (the one selected, else a 6128) boots with them.
+bool EmuHost::loadCroRomSet(const CroRomSet& set, const std::string& path, const std::string& what) {
+    int index = currentModel >= 0 && !models[(size_t)currentModel].plus ? currentModel : -1;
+    if (index < 0)
+        for (int i = 0; i < (int)models.size(); i++) if (models[i].id == "cpc6128" && models[i].available) { index = i; break; }
+    if (index < 0) { status = "A CRO of CPC ROMs needs a classic CPC model (its ROMs in " + romDir + ")."; return false; }
+    croSet = set;
+    croBoot = true;
+    const bool ok = bootModel(index, currentModel == index ? ramKiB : -1, currentModel == index ? crtcType : -1);
+    croBoot = false;
+    if (!ok) { croSet = CroRomSet{}; return false; }
+    cartPath = path;
+    cartName = std::filesystem::path(path).filename().string();
+    lastProgram = std::filesystem::path(path).stem().string();
+    noteRecent(path);
+    std::string fitted;
+    if (!set.lower.empty()) fitted += " OS";
+    for (const auto& r : set.upper) fitted += " ROM " + std::to_string(r.first);
+    if (!set.mf2.empty()) fitted += " Multiface II";
+    status = "Booted " + models[(size_t)index].label + " with " + cartName + what + ":" + fitted;
+    return true;
+}
+
+bool EmuHost::loadCroGroup(uint32_t number) {
+    if (cartPath.empty()) return false;
+    croGroup = (int)number;               // kept: a restart of the cartridge keeps the group
+    return loadCartridgeFile(cartPath);
 }
 
 // A disc's writes, back into the file it came from -- in its own format (standard or
@@ -1467,7 +1588,7 @@ std::string EmuHost::timelineFingerprint() const {
         + "|" + std::to_string(gateArrayPart) + "|" + (z80Cmos ? "c" : "n") + "|" + dacType + "|" + lightgunType + "|"
         + (v9990Enabled ? "v" : "") + (opl4Enabled ? "o" : "") + (playCityEnabled ? "p" : "") + (m4Enabled ? "m" : "")
         + (serialEnabled ? "s" : "") + (multifaceEnabled ? "f" : "") + (gx4000Ram128 ? "g" : "") + (plusExpansionClassic ? "e" : "")
-        + "|" + speechKind + "|" + symbifaceModule + "|" + diskName[0] + "|" + diskName[1] + "|" + tapeName + "|" + cartName;
+        + "|" + speechKind + "|" + symbifaceModule + "|" + mouseInterface + "|" + diskName[0] + "|" + diskName[1] + "|" + tapeName + "|" + cartName;
     for (const auto& r : expansionRoms) f += "|" + std::to_string(r.slot) + ":" + r.name;
     return f;
 }

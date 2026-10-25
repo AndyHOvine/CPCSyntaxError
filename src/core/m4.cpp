@@ -2,6 +2,7 @@
 #include "m4.h"
 #include "emulator.h"
 #include "z80.h"
+#include "cpr_loader.h"
 
 #include <ctime>
 
@@ -22,7 +23,7 @@ static const int C_OPEN = 0x4301, C_READ = 0x4302, C_WRITE = 0x4303, C_CLOSE = 0
     C_NETSTAT = 0x4323, C_TIME = 0x4324, C_DIRSETARGS = 0x4325, C_VERSION = 0x4326, C_UPGRADE = 0x4327,
     C_HTTPGETMEM = 0x4328, C_COPYBUF = 0x4329, C_COPYFILE = 0x432a, C_ROMSUPDATE = 0x432b,
     C_ROMLIST = 0x432c, C_DSKEXT = 0x4330, C_NETSOCKET = 0x4331, C_NETRSSI = 0x4337, C_GETNETWORK = 0x433b, C_WIFIPOW = 0x433c,
-    C_ROMLOW = 0x433d, C_ROMCP = 0x43fc, C_ROMWRITE = 0x43fd, C_CONFIG = 0x43fe;
+    C_CTRBOOT = 0x432e, C_CTRUPLOAD = 0x432f, C_ROMLOW = 0x433d, C_ROMCP = 0x43fc, C_ROMWRITE = 0x43fd, C_CONFIG = 0x43fe;
 // ff.i
 static const int FA_READ = 1, FA_WRITE = 2, FA_CREATE_NEW = 4, FA_CREATE_ALWAYS = 8, FA_OPEN_ALWAYS = 16, FA_REALMODE = 128;
 
@@ -62,6 +63,7 @@ void M4Board::setEnabled(bool on) {
 
 void M4Board::powerOn() {
     cmd.clear();
+    romOff = false; resetLine = false; ctrBoot = false;
     for (Fd& f : fds) f = Fd{};
     dirRows.clear(); dirShort.clear(); dirIndex = 0;
     if (storage) storage->cwd = "/";
@@ -212,6 +214,7 @@ int M4Board::dataPortRead() { return 0xff; }
 
 int M4Board::readMemory(int address, int selectedRom) {
     if (!enabled || selectedRom != romSlot) return -1;
+    if (romOff) return -2;                           // the slot is vacated (memory.cpp)
     return rom[(address - 0xc000) & 0x3fff];
 }
 
@@ -421,8 +424,29 @@ bool M4Board::ack(Z80* cpu) {
             for (int i = 0; i < n && 5 + i < (int)p.size(); i++) target[(dest + i) & 0x3fff] = (uint8_t)p[5 + i];
             break;
         }
+        case C_CTRUPLOAD: {                          // |CTRUP,"cartimg.cpr": .cpr or a plain dump
+            const std::string from = storage ? storage->find(str(0)) : "";
+            Bytes data;
+            if (from.empty() || !storage->isFile(from) || storage->readFile(from, data) != M4_FR_OK) { respStr("File not found.\r\n"); break; }
+            Cartridge cart = parseCartridge(data);
+            if (cart.banks.empty() || cart.bankCount <= 0) { respStr("Not a cartridge image.\r\n"); break; }
+            // m4info.txt (v2.0.4) says 256 KB, but Alcon 2020 (512 KB) runs from a real M4 by
+            // |CTR (the user, 2026-10-25): the whole 512 KB of the board's ROM space is used.
+            if (cart.banks.size() > 32) cart.banks.resize(32);
+            cartFlash = cart.banks;
+            respStr("Cartridge uploaded.\r\n");
+            break;
+        }
+        case C_CTRBOOT:                              // |CTR: the flashed image as the cartridge (CPC PLUS only)
+            ctrBoot = true;
+            break;
+        case C_M4OFF:                                // M4ROM.s: "m4 will force a reset with the M4 rom disabled"
+            romOff = true;
+            resetLine = true;
+            break;
+        // The board's ROM slots are not emulated (ROMs go in the machine's own slots), so
+        // the commands that manage them have nothing to act on.
         case C_ROMCP: case C_ROMSUPDATE: case C_ROMLOW: case C_ROMSOFF: case C_RAMDISOFF: case C_NMIOFF:
-        case C_M4OFF:
             break;
         case C_VERSION: respStr("M4 board v2.0.8 (CPCSyntaxError)"); break;
         case C_TIME: {

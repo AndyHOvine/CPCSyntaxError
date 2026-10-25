@@ -41,6 +41,12 @@ struct RasterLine {
     int verticalCounter = 0;
     int rasterCounter = 0;
     int verticalAdjust = 0;
+    // The CRTC line the record's C0=0 belongs to (C4 x 8 + C9, -1: no C0=0 seen yet), and
+    // whether it was an adjustment line. The counters above are taken where the monitor
+    // line starts, at the HSYNC, so they are the PREVIOUS CRTC line's; the line displayed
+    // in the record starts at its C0=0. The ASIC's sprites are placed by that line.
+    int displayedLine = -1;
+    bool displayedLineAdjust = false;
     int crtcType = 0;
     // ACCC §19.2: the SKEW-DISPTMG bits as THIS chip reads them (0 on CRTC 1 and 2,
     // which have no such function). Captured from the chip profile rather than

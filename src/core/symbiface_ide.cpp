@@ -86,7 +86,7 @@ uint32_t SymbifaceIde::sectors() {
 bool SymbifaceIde::handlesPort(int port) const {
     if (!enabled || !disc) return false;
     port &= 0xffff;
-    return port >= 0xfd06 && port <= 0xfd0f;
+    return port >= (xmass ? 0xfd08 : 0xfd06) && port <= 0xfd0f;
 }
 
 bool SymbifaceIde::address(uint32_t& out) const {

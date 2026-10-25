@@ -1,6 +1,8 @@
 // CPCSyntaxError — CPC keyboard matrix.
 #include "keyboard.h"
 
+#include <algorithm>
+
 namespace cpcse {
 
 static const std::unordered_map<std::string, KeyCell>& keyMap() {
@@ -186,6 +188,29 @@ void KeyboardMatrix::reset() {
     lightgunMode = savedLightgunMode; region = savedRegion; lightgunEnabled = savedLightgunEnabled;
     lightgunBeamHit = false; lightgunTrigger = false; gunstickTriggerPending = false; gunstickReadCounter = 0; selectedRow = 0;
     pressedKeys.clear(); pressedSymbols.clear(); directBits.clear(); codeToEffective.clear();
+    amxMoveX = amxMoveY = 0; amxLines = 0xff;   // the mouse's buttons are held by the hand, not the reset
+}
+
+void KeyboardMatrix::selectRow(int row) {
+    row &= 0x0f;
+    if (amxEnabled && selectedRow == 9 && row != 9) {
+        // row 9 let go: the AMX mouse shows its next step (one mickey each way at most)
+        amxLines = 0xff;
+        if (amxMoveY < 0) amxLines &= ~0x01; else if (amxMoveY > 0) amxLines &= ~0x02;
+        if (amxMoveX < 0) amxLines &= ~0x04; else if (amxMoveX > 0) amxLines &= ~0x08;
+        amxMoveX = amxMoveY = 0;
+    }
+    selectedRow = row;
+}
+
+void KeyboardMatrix::amxMove(int dx, int dy) {
+    amxMoveX = std::clamp(amxMoveX + dx, -1, 1);
+    amxMoveY = std::clamp(amxMoveY + dy, -1, 1);
+}
+
+void KeyboardMatrix::amxButton(int index, bool pressed) {
+    if (index < 0 || index > 2) return;
+    if (pressed) amxButtons |= 1 << index; else amxButtons &= ~(1 << index);
 }
 
 std::string KeyboardMatrix::setRegion(const std::string& regionIn) {
@@ -317,6 +342,12 @@ int KeyboardMatrix::read(int row) {
     if (row == 6) return keys & keyboardJoystick1 & gamepadJoystick1;   // second joystick
     if (row != 9) { if (onRowRead) onRowRead(row, keys); return keys; }
     int value = keys & keyboardJoystick & gamepadJoystick;
+    if (amxEnabled) {
+        value &= amxLines;
+        if (amxButtons & 1) value &= ~0x10;
+        if (amxButtons & 2) value &= ~0x20;
+        if (amxButtons & 4) value &= ~0x40;
+    }
     if (lightgunEnabled) {
         value = (keys & 0x80) | 0x7f;
         if (onLightgunRead) onLightgunRead(lightgunMode);

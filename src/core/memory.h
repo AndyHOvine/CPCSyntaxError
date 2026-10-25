@@ -36,6 +36,12 @@ public:
     bool lowerEnabled = true, upperEnabled = false;
     int ramConfig = 0, ram4MbSegment = 0;
     int upperRom = 0; bool useCartridgeUpper = true; int upperCartridgePage = 1;
+    // Plus: the number the last &DFxx write selected. Below &80 the ASIC maps a cartridge page,
+    // but a board on the expansion port that answers that number (the M4) overrides it.
+    int plusSelectedRom = 0;
+    // A classic CPC running a cartridge from the M4 (|CTR): bank 0 is the lower ROM (as on a
+    // Plus) and the ROM select takes the Plus's mapping, &80+n for bank n.
+    bool cartridgeOnClassic = false;
     int lowerPage = 0, lowerLocation = 0; bool asicRamEnabled = false; int asicRamLocation = 0;
     // Which 64K expansion pages (&7Fxx bits 5..3) answer, one bit each. All of them in a
     // contiguous expansion; a silicon disc answers only pages 4..7. Set to all by

@@ -2,7 +2,9 @@
 // DECtalk speech (with the host's voices), its getters and its clock. See speech.h.
 #include "speech.h"
 
+#include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cmath>
 #include <cstring>
 #include <ctime>
@@ -64,6 +66,30 @@ bool hasWords(const std::string& s) {
     for (unsigned char c : s) if (std::isalnum(c)) return true;
     return false;
 }
+
+// The SP0256-AL2's 64 allophones by their data-sheet names (PA1-PA5 pauses, then OY, AY, EH,
+// KK3 ...), each as the DECtalk ARPAbet phone it names. LambdaSpeak 3 speaks the emulated
+// SSA-1 and dk'tronics through its DECtalk this way ("a DECtalk-based emulation of the
+// Amstrad SSA-1", its README). "_" is a pause.
+const char* const ALLOPHONE_PHONES[64] = {
+    "_", "_", "_", "_", "_", "oy", "ay", "eh",            // PA1 PA2 PA3 PA4 PA5 OY AY EH
+    "k", "p", "jh", "n", "ih", "t", "r", "ax",            // KK3 PP JH NN1 IH TT2 RR1 AX
+    "m", "t", "dh", "iy", "ey", "d", "uw", "ao",          // MM TT1 DH1 IY EY DD1 UW1 AO
+    "aa", "y", "ae", "hx", "b", "th", "uh", "uw",         // AA YY2 AE HH1 BB1 TH UH UW2
+    "aw", "d", "g", "v", "g", "sh", "zh", "r",            // AW DD2 GG3 VV GG1 SH ZH RR2
+    "f", "k", "k", "z", "nx", "l", "w", "eh r",           // FF KK2 KK1 ZZ NG LL WW XR
+    "w", "y", "ch", "er", "er", "ow", "dh", "s",          // WH YY1 CH ER1 ER2 OW DH2 SS
+    "n", "hx", "or", "ar", "ir", "g", "el", "b",          // NN2 HH2 OR AR YR GG2 EL BB2
+};
+
+const size_t EEPROM_SIZE = 0x20000;  // 25LC1024: 128 KB
+const int EEPROM_PAGE = 512;         // LambdaSpeak 3's page (2 x the chip's 256-byte write page)
+const long long EEPROM_WRITE_US = 6000;   // 25LC1024 data sheet: write cycle time Twc, 6 ms max
+const long long EEPROM_ERASE_US = 10000;  // ...and chip erase time Tce, 10 ms max
+// One play-loop pass of the firmware: about 2 us of its own, then a 5-byte SPI read per channel
+// at 20 MHz / 2 (SPI_CLOCK_DIV2), 0.8 us a byte. The timer (20 MHz / 8 = 2.5 MHz) is only
+// looked at once a pass, so a channel's sample time is whole passes.
+double playLoopUs(int channels) { return 2.0 + 4.4 * channels; }
 
 } // namespace
 
@@ -160,6 +186,13 @@ void SpeechSynth::ls3Reset() {
     ttsSample = 0.0f;
     serialMode = false; escape = 0; pendingResult = -1; directMode = true;
     txBuffer.clear(); rxBuffer.clear(); rxCursor = 0;
+    serialBaud = 0; midiDuplex = false; midiEscape = 0;
+    pcmSample = 0.0f;
+    eeStage = EE_NONE; eeTesting = false;
+    playLastZero = false; playChannel = playStart = playEnd = 0;
+    pcmChannels = {};
+    amdrumExit = 0; amdrumLast = 0;
+    allophones.clear(); allophoneQuietUs = -1; allophoneBusyUs = 0;
     chip.reset();
 }
 
@@ -167,16 +200,23 @@ int SpeechSynth::ls3Idle() {
     switch (ls3Mode) {
         case LS3_EPSON: case LS3_DECTALK: return 32;
         case LS3_SERIAL: return 16;
-        case LS3_SSA1: case LS3_SSA1_SP0:
+        // The emulated SSA-1: SBY (bit 7) and /LRQ (bit 6) as ls300hardware.h drives them:
+        // idle 128, "speaking, load me" 0 for 14 ms after an allophone, busy 64 while it reads.
+        case LS3_SSA1: return allophoneBusyUs > 0 ? 0x40 : (allophoneQuietUs >= 0 && allophoneQuietUs < 14000) ? 0x00 : 0x80;
+        case LS3_SSA1_SP0:
             return (chip.sby_r() ? 0x80 : 0) | (chip.lrq_r() ? 0 : 0x40);   // 128 idle, 0 speaking, 64 full
-        case LS3_DK: return chip.lrq_r() ? 0 : 0x80;
+        case LS3_DK: return allophoneBusyUs > 0 ? 0x80 : 0x00;                    // dk_speech_busy / idle_loadme
+        case LS3_AMDRUM: return 0;
+        case LS3_EEPROM_PLAY: return 32;                                    // speech_native_ready
         case LS3_DK_SP0: return chip.lrq_r() ? 0x7f : 0xff;                 // the dk'tronics card's own bit 7
     }
     return 0xff;
 }
 
 int SpeechSynth::ls3Read() {
-    if (!steps.empty()) return steps.front().bus;
+    if (!steps.empty() && !steps.front().listening) return steps.front().bus;
+    if (eeStage == EE_GET_DATA) return eeBus;                            // the byte last fetched (32 at a page start)
+    if (eeStage != EE_NONE) return 32;                                    // waiting for a byte: speech_native_ready
     if (ls3Mode == LS3_SERIAL && pendingResult >= 0) { const int r = pendingResult; pendingResult = -1; return r; }
     return ls3Idle();
 }
@@ -244,6 +284,65 @@ void SpeechSynth::ls3Control(int v) {
         case 0xec: mode(LS3_DK, "DeeKay Tronics mode."); return;
         case 0xe2: mode(LS3_SSA1_SP0, "S-S-A 1 vintage mode."); return;
         case 0xe1: mode(LS3_DK_SP0, "DeeKay Tronics vintage mode."); return;
+        // ---- the EEPROM (eeprom_pcm_upload_mode, eeprom_get_data, eeprom_pcm_clear_all,
+        // eeprom_full_check, eeprom_pcm_play_mode). The prompts are said while the Z80 runs.
+        case 0xfe: case 0xf9:
+            eeTesting = v == 0xfe;
+            if (ls3Confirm) ls3Speak("EEPROM data upload. Send start page number.", false);
+            eeStage = EE_START;
+            return;
+        case 0xf7:
+            if (ls3Confirm) ls3Speak("EEPROM get data. Send start page number.", false);
+            eeStage = EE_GET_START;
+            return;
+        case 0xf8: {
+            // the Z80 is held from the control byte to the end (process_control runs halted)
+            if (ls3Confirm) ls3Speak("EEPROM clear all.", true);
+            Step erase; erase.hold = true; erase.us = EEPROM_ERASE_US;
+            erase.then = [this]() { std::fill(eeprom.begin(), eeprom.end(), (uint8_t)0xff); saveEeprom(); };
+            steps.push_back(std::move(erase));
+            if (ls3Confirm) ls3Speak("EEPROM cleared.", true);
+            return;
+        }
+        case 0xf5: {
+            if (ls3Confirm) ls3Speak("EEPROM determine size.", true);
+            Step erase; erase.hold = true; erase.us = EEPROM_ERASE_US;
+            erase.then = [this]() { std::fill(eeprom.begin(), eeprom.end(), (uint8_t)0xff); };
+            steps.push_back(std::move(erase));
+            if (ls3Confirm) ls3Speak("EEPROM cleared. All bytes 255.", true);
+            // a test byte at 0, read on until it comes round again: the size
+            if (ls3Confirm) ls3Speak("EEPROM has " + std::to_string(EEPROM_SIZE) + " bytes.", true);
+            Step erase2; erase2.hold = true; erase2.us = EEPROM_ERASE_US;
+            steps.push_back(std::move(erase2));
+            if (ls3Confirm) ls3Speak("EEPROM cleared.", true);
+            // every 256-byte write page filled with its number / 2, so a 512-byte page with its own
+            Step pages; pages.hold = true; pages.us = (long long)(EEPROM_SIZE / 256) * EEPROM_WRITE_US;
+            pages.then = [this]() {
+                for (size_t a = 0; a < EEPROM_SIZE; a++) eeprom[a] = (uint8_t)((a / 256) >> 1);
+                saveEeprom();
+            };
+            steps.push_back(std::move(pages));
+            if (ls3Confirm) ls3Speak("EEPROM pages written.", true);
+            if (ls3Confirm) ls3Speak("EEPROM pages okay. Done testing EEPROM.", true);
+            return;
+        }
+        case 0xfa: case 0xfb: case 0xfc: case 0xfd:
+            playChannels = v - 0xf9;
+            if (ls3Confirm)
+                ls3Speak("EEPROM P C M play with " + std::to_string(playChannels) + " channels. Send channel, page number, number of pages, "
+                         "and sample rate byte. Use reset button to quit.", false);
+            ls3Mode = LS3_EEPROM_PLAY;
+            playLastZero = false; playChannel = playStart = playEnd = 0;
+            pcmChannels = {};
+            pcmSample = 0.0f;
+            return;
+        // ---- Amdrum (amdrum_mode): &FFxx is the DAC from now on
+        case 0xe3:
+            ls3Mode = ls3LastMode = LS3_AMDRUM;
+            ls3Confirmation("Amdrum mode. Power cycle C P C to quit.");
+            amdrumExit = 0; amdrumLast = 0;
+            pcmSample = 0.0f;
+            return;
         case 0xc8: ls3Speak("LambdaSpeak 3, by Michael Wessel, with Dr. Stefan Stumpferl. Emulated by C-P-C Syntax Error.", !ls3NonBlockConfirm); return;
         case 0xc7: ls3Speak("I'm sorry Dave. I'm afraid I can't do that.", !ls3NonBlockConfirm); return;
         case 0xc6: ls3Speak("Daisy, Daisy, give me your answer do. I'm half crazy, all for the love of you.", !ls3NonBlockConfirm); return;
@@ -306,17 +405,194 @@ void SpeechSynth::ls3Control(int v) {
         ls3Confirmation("Flush buffer after " + std::to_string(10 + ls3FlushDelay * 10) + " milliseconds.");
         return;
     }
-    // &FE-&F5 (the EEPROM's PCM sampler), &E3 (Amdrum), &C5 / &C2 (test programs): not here.
+    // &C5 / &C2 (the port echo test and the built-in PCM test program): not here.
+}
+
+// ---- the EEPROM, the PCM DAC, the emulated SSA-1 -------------------------------------------
+
+void SpeechSynth::setEepromFile(const std::string& path) {
+    eepromPath = path;
+    if (path.empty()) return;
+    if (FILE* f = std::fopen(path.c_str(), "rb")) {
+        Bytes data(EEPROM_SIZE, 0xff);
+        const size_t n = std::fread(data.data(), 1, data.size(), f);
+        std::fclose(f);
+        if (n == EEPROM_SIZE) eeprom = data;
+    }
+}
+void SpeechSynth::saveEeprom() {
+    if (eepromPath.empty()) return;
+    if (FILE* f = std::fopen(eepromPath.c_str(), "wb")) { std::fwrite(eeprom.data(), 1, eeprom.size(), f); std::fclose(f); }
+}
+
+// The Amdrum mode's loop: a new byte on the bus goes to the PWM, clipped to 5..250, and the
+// sequence 131 133 131 133 128 129 135 resets the board ("4 6 4 6 1 2 8" in its source).
+void SpeechSynth::ls3Amdrum(int v) {
+    if (v == amdrumLast) return;
+    amdrumLast = v;
+    const int clipped = std::max(5, std::min(250, v));
+    pcmSample = (clipped - 127) / 127.0f;
+    if ((v == 128 && amdrumExit == 4) || (v == 129 && amdrumExit == 5) || (v == 131 && (amdrumExit == 0 || amdrumExit == 2))
+        || (v == 133 && (amdrumExit == 1 || amdrumExit == 3))) {
+        amdrumExit++;
+    } else if (v == 135 && amdrumExit == 6) {
+        ls3Reset();
+        Step boot; boot.us = 50000; steps.push_back(boot);
+    } else {
+        amdrumExit = 0;
+    }
+}
+
+// eeprom_pcm_play_mode's command: 0, channel, 0, start page, 0, pages, 0, speed: "The zero
+// is being used as a synchronization byte". Channel 8 is the SP0256, 255 resets the board.
+void SpeechSynth::playByte(int v) {
+    if (v == 0) { playLastZero = true; return; }
+    if (!playLastZero) return;
+    playLastZero = false;
+    if (playChannel == 0) {
+        if ((v >= 1 && v <= playChannels) || v == 8 || v == 255) playChannel = v;
+        else { playLastZero = true; return; }       // not taken: still after a zero
+        if (playChannel == 255) { ls3Reset(); Step boot; boot.us = 50000; steps.push_back(boot); }
+        return;
+    }
+    if (playStart == 0) { playStart = v; return; }
+    if (playEnd == 0) { playEnd = (v + playStart) & 0xff; return; }
+    // the speed: the channel starts (its value 127 until its first sample is due)
+    if (playChannel >= 1 && playChannel <= 4) {
+        PcmChannel& c = pcmChannels[(size_t)playChannel - 1];
+        c.address = (size_t)playStart * EEPROM_PAGE;
+        c.end = (size_t)playEnd * EEPROM_PAGE;
+        c.speed = v;
+        c.sinceUs = 0;
+        c.value = 127;
+    } else if (playChannel == 8 && hasRom) {
+        chip.ald_w((uint8_t)playStart);
+    }
+    playChannel = playStart = playEnd = 0;
+}
+
+void SpeechSynth::playAdvance() {
+    const double loop = playLoopUs(playChannels);
+    int sum = 127;
+    for (int n = 0; n < 4; n++) {
+        PcmChannel& c = pcmChannels[(size_t)n];
+        if (n < playChannels) {
+            if (c.address <= c.end) {
+                // speed timer ticks of 0.4 us, seen once a loop pass
+                const double due = std::max(1.0, std::ceil((c.speed / 2.5) / loop)) * loop;
+                if (++c.sinceUs >= (long long)std::llround(due)) {
+                    c.value = (int)eeprom[c.address % EEPROM_SIZE] - 127;
+                    c.address++;
+                    c.sinceUs = 0;
+                }
+            } else c.value = 0;
+        }
+        sum += c.value;
+    }
+    pcmSample = (std::max(0, std::min(254, sum)) - 127) / 127.0f;
+}
+
+// The EEPROM jobs' bytes. Upload: start page, pages, then pages x 512 bytes; the Z80 is held
+// while each 256-byte write page is written (z80_halt until EEPROM_WRITE_IN_PROGRESS clears).
+// Download: start page, pages; then each write puts the next byte on the bus, the Z80 held
+// while each page is read in.
+void SpeechSynth::eepromByte(int v) {
+    switch (eeStage) {
+        case EE_START: case EE_GET_START:
+            eeStart = v;
+            if (ls3Confirm) ls3Speak("Send number of pages.", false);
+            eeStage = eeStage == EE_START ? EE_PAGES : EE_GET_PAGES;
+            return;
+        case EE_PAGES: {
+            eePages = v;
+            if (ls3Confirm) ls3Speak("Send " + std::to_string(v) + " pages now.", false);
+            eeAddress = (size_t)eeStart * EEPROM_PAGE;
+            eeEnd = (size_t)(eeStart + eePages) * EEPROM_PAGE;
+            eeStage = EE_DATA;
+            if (eeAddress >= eeEnd) eepromByte(-1);          // nothing to send: done at once
+            return;
+        }
+        case EE_DATA: {
+            if (v >= 0) {
+                eeprom[eeAddress % EEPROM_SIZE] = (uint8_t)v;
+                eeAddress++;
+                if (eeAddress % 256 == 0) { Step w; w.hold = true; w.us = EEPROM_WRITE_US; steps.push_back(std::move(w)); }
+            }
+            if (eeAddress < eeEnd) return;
+            eeStage = EE_NONE;
+            saveEeprom();
+            if (ls3Confirm) ls3Speak("Data loaded into EEPROM.", true);
+            if (eeTesting) {
+                // five plays of the upload, a byte each 50 us (+ its SPI read), 200 ms apart
+                if (ls3Confirm) ls3Speak("Testing P C M data.", true);
+                Bytes data;
+                for (size_t a = (size_t)eeStart * EEPROM_PAGE; a < eeEnd; a++) data.push_back(eeprom[a % EEPROM_SIZE]);
+                for (int i = 0; i < 5; i++) {
+                    Step play; play.hold = true; play.pcm = data; play.pcmUs = 51; steps.push_back(play);
+                    Step gap; gap.hold = true; gap.us = 200000; steps.push_back(gap);
+                }
+                if (ls3Confirm) ls3Speak("Done testing.", true);
+            }
+            return;
+        }
+        case EE_GET_PAGES: {
+            eePages = v;
+            eeAddress = (size_t)eeStart * EEPROM_PAGE;
+            eeEnd = (size_t)(eeStart + eePages) * EEPROM_PAGE;
+            eeStage = EE_GET_DATA;
+            eeBus = 32;
+            if (eeAddress >= eeEnd) { eeStage = EE_NONE; if (ls3Confirm) ls3Speak("EEPROM data retrieved.", false); return; }
+            Step read; read.hold = true; read.us = EEPROM_PAGE * 8 / 10; steps.push_back(std::move(read));   // 512 bytes at 10 MHz
+            return;
+        }
+        case EE_GET_DATA: {
+            eeBus = eeprom[eeAddress % EEPROM_SIZE];
+            eeAddress++;
+            if (eeAddress % EEPROM_PAGE != 0) return;
+            // the page's last byte stays a getter delay (CPC_READ_DELAY), then the next page
+            Step stay; stay.bus = eeBus; stay.us = getterUs(); steps.push_back(std::move(stay));
+            if (eeAddress >= eeEnd) {
+                eeStage = EE_NONE;
+                if (ls3Confirm) ls3Speak("EEPROM data retrieved.", false);
+                return;
+            }
+            Step read; read.hold = true; read.us = EEPROM_PAGE * 8 / 10;
+            read.then = [this]() { eeBus = 32; };
+            steps.push_back(std::move(read));
+            return;
+        }
+        default: return;
+    }
+}
+
+void SpeechSynth::speakAllophones() {
+    std::string phones;
+    for (int a : allophones) { phones += ALLOPHONE_PHONES[a & 63]; phones += ' '; }
+    allophones.clear();
+    SpeechSegment seg;
+    seg.voice = std::max(0, std::min(ls3Voice - 1, 8));
+    seg.wpm = 15 + 25 * ls3Rate;
+    seg.gain = ls3Volume / 13.0;
+    parsePhones(phones, seg.phones);
+    bool sound = false;
+    for (const SpeechPhone& p : seg.phones) sound |= p.arpabet != "_";
+    if (!sound) return;
+    Step st;
+    st.say.push_back(std::move(seg));
+    st.listening = true;                         // DECtalk speaks; the board reads on (cont())
+    steps.push_back(std::move(st));
 }
 
 void SpeechSynth::ls3Write(int v) {
     v &= 0xff;
-    if (!steps.empty()) {
+    if (!steps.empty() && !steps.front().listening) {
         // Busy: the board is not reading the bus -- except for &DF while it speaks.
         Step& s = steps.front();
         if (v == 0xdf && !s.say.empty()) { steps.clear(); stepUs = 0; ttsSample = 0.0f; }
         return;
     }
+    if (ls3Mode == LS3_EEPROM_PLAY) { playByte(v); return; }   // the play loop takes every byte
+    if (eeStage != EE_NONE) { eepromByte(v); return; }
     if (ls3Pending > 0) { ls3Pending -= 1; return; }
     if (ls3Mode == LS3_SERIAL) {
         serialWrite(v);
@@ -325,8 +601,19 @@ void SpeechSynth::ls3Write(int v) {
     }
     if (v >= 0x80) { ls3Control(v); return; }
     switch (ls3Mode) {
-        case LS3_SSA1: case LS3_SSA1_SP0: if (hasRom) chip.ald_w((uint8_t)v); return;
-        case LS3_DK: case LS3_DK_SP0: if (hasRom) chip.ald_w((uint8_t)(v & 0x3f)); return;
+        case LS3_SSA1_SP0: if (hasRom) chip.ald_w((uint8_t)v); return;
+        case LS3_DK_SP0: if (hasRom) chip.ald_w((uint8_t)(v & 0x3f)); return;
+        case LS3_SSA1: case LS3_DK: {
+            // the emulated SSA-1 / dk'tronics: the allophone into the buffer (busy while it is
+            // read, "_delay_us(15)"), spoken 10 + flush delay x 10 ms after the last one, or at
+            // once when the buffer is full
+            if (allophoneBusyUs > 0) return;          // still reading the last one
+            allophones.push_back(ls3Mode == LS3_DK ? (v & 0x3f) : v);
+            allophoneQuietUs = 0;
+            allophoneBusyUs = 18;
+            if (allophones.size() >= FLUSH_AT) { speakAllophones(); allophoneQuietUs = -1; }
+            return;
+        }
         default: break;
     }
     // Epson / DECtalk text, with \xHH
@@ -352,6 +639,13 @@ void SpeechSynth::ls3Write(int v) {
 }
 
 void SpeechSynth::ls3Advance() {
+    // the emulated SSA-1's timer: "load me" again after 14 ms, spoken after the flush delay
+    if (allophoneBusyUs > 0) allophoneBusyUs--;
+    if (allophoneQuietUs >= 0 && allophoneBusyUs == 0) {
+        allophoneQuietUs++;
+        if (allophoneQuietUs >= (10 + ls3FlushDelay * 10) * 1000LL) { allophoneQuietUs = -1; speakAllophones(); }
+    }
+    if (ls3Mode == LS3_EEPROM_PLAY) playAdvance();
     if (steps.empty()) { ttsSample = 0.0f; return; }
     Step& s = steps.front();
     bool finished = false;
@@ -377,11 +671,21 @@ void SpeechSynth::ls3Advance() {
                 finished = s.played >= s.job->pcm.size();
             }
         }
+    } else if (!s.pcm.empty()) {
+        const size_t at = (size_t)(stepUs / std::max(1, s.pcmUs));
+        pcmSample = at < s.pcm.size() ? ((int)s.pcm[at] - 127) / 127.0f : 0.0f;
+        stepUs += 1;
+        finished = at >= s.pcm.size();
+        if (finished) pcmSample = 0.0f;
     } else {
         stepUs += 1;
         finished = stepUs >= s.us;
     }
-    if (finished) { steps.pop_front(); stepUs = 0; ttsSample = 0.0f; }
+    if (finished) {
+        std::function<void()> then = std::move(s.then);
+        steps.pop_front(); stepUs = 0; ttsSample = 0.0f;
+        if (then) then();
+    }
 }
 
 } // namespace cpcse

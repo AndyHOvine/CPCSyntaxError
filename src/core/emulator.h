@@ -2,6 +2,7 @@
 // Connects CPU, memory, video, audio, storage and expansion devices.
 #pragma once
 #include "common.h"
+#include "mouse_interface.h"
 #include "raster.h"
 #include "cpr_loader.h"
 #include "debug_symbols.h"
@@ -35,6 +36,9 @@ public:
     Symbiface2Rtc* sf2Rtc = nullptr;
     Symbiface3* sf3 = nullptr;
     SymbifaceIde* ide = nullptr;
+    // The Kempston mouse or the MultiPlay (mouse_interface.h). A value, not a chip pointer:
+    // the timeline's copy of the machine takes its counters with the rest.
+    MouseInterface mouseIf;
     Multiface2* multiface = nullptr;   // Romantic Robot's Multiface II     // the SYMBiFACE II / III IDE, a host folder its disc
     CtmMonitor* monitorRenderer = nullptr;
     // WHICH MONITOR IS PLUGGED IN (monitor_model.h). The machine needs to know because

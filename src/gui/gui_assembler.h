@@ -41,6 +41,10 @@ public:
         for (const auto& m : messages) s += "    [" + m.file + ":" + std::to_string(m.line) + "] " + m.text + "\n";
         return s;
     }
+    // the open files: 0 is the main file, the rest the files it links
+    int fileCount() const { return (int)tabs.size(); }
+    std::string filePath(int index) const { return index == activeTab ? path : (index >= 0 && index < (int)tabs.size() ? tabs[(size_t)index].path : std::string()); }
+    void showFile(int index) { showTab(index); }
     void newFile();
     void openFile(const std::string& path);
     void saveFile(const std::string& path);
@@ -56,6 +60,21 @@ private:
     FileBrowser& browser;
     SaveDialog& saver;
 
+    // The open files, one tab each. tabs[0] is the main file, the one assembled; the others
+    // are the files it links (INCLUDE / READ, found and opened by themselves). The active
+    // tab's text is edited in place in source / path / modified / lineCount below, and put
+    // back into its Tab when another tab is shown.
+    struct Tab { std::string source, path; bool modified = false; int lineCount = 1; };
+    std::vector<Tab> tabs;
+    int activeTab = 0;
+    int selectTab = -1;                         // show this tab next frame
+    void storeActive();
+    void showTab(int index);
+    int tabFor(const std::string& file) const;  // the tab of a file rasm named, -1 = none
+    std::vector<std::string> linkedFiles(const std::string& text, const std::string& fromPath) const;
+    void openLinked(const std::string& text, const std::string& fromPath, int depth);
+    void refreshErrorLines();
+
     std::string source;
     std::string path;                           // "" = never saved
     bool modified = false;
@@ -64,7 +83,7 @@ private:
     int lastStart = -1, lastRun = -1, lastLength = 0;
     int lineCount = 1;
 
-    struct Message { int line = 0; std::string file; std::string text; bool inEditor = false; };
+    struct Message { int line = 0; std::string file; std::string text; bool inEditor = false; int tab = -1; };
     std::vector<Message> messages;
     std::set<int> errorLines;
     std::vector<std::pair<std::string, int>> symbols;

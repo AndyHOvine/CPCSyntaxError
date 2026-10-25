@@ -37,18 +37,40 @@ bool SpeechSynth::handlesPort(int port) const {
     port &= 0xffff;
     if (kind == Kind::Ssa1) return port == 0xfbee || port == 0xfaee;
     if (kind == Kind::DkTronics) return port == 0xfbfe;
-    if (kind == Kind::LambdaSpeak3) return port == 0xfbee || port == 0xfbfe;
+    // LambdaSpeak 3's Amdrum mode: "Decoding of IO addresses &FFxx will only be active when the
+    // Amdrum mode is enabled" (its README).
+    if (kind == Kind::LambdaSpeak3) return port == 0xfbee || port == 0xfbfe || (ls3Mode == LS3_AMDRUM && (port & 0xff00) == 0xff00);
     return false;
 }
 
+// What is on the other end of the UART: the MP3 module at its 9600 baud, or MIDI when the CPC
+// set baud mode 6, "31250 BAUDs as required for MIDI" (the README).
+void SpeechSynth::uartOut(int value) {
+    if (serialBaud == 6 && midiOut) midiOut(value & 0xff);
+    else mp3.receive(value);
+}
+
 void SpeechSynth::tx(int value) {
-    if (directMode) mp3.receive(value);
+    if (directMode) uartOut(value);
     else if (txBuffer.size() < 524) txBuffer.push_back(value);    // 256 + 268, the manual's maximum
 }
 
 void SpeechSynth::serialWrite(int value) {
+    // MIDI full duplex (&FF,50): "255 is a command prefix", 255 255 sends a 255, 255 20 leaves.
+    if (midiDuplex) {
+        if (midiEscape) {
+            midiEscape = 0;
+            if (value == 255) uartOut(255);
+            else if (value == 20) midiDuplex = false;
+            return;
+        }
+        if (value == 255) { midiEscape = 1; return; }
+        uartOut(value);
+        return;
+    }
     if (escape == 2) { escape = 0; tx(value); return; }
-    if (escape == 3) { escape = 0; return; }                          // baud / width / parity / stop
+    if (escape == 6) { escape = 0; serialBaud = value; return; }      // &FF,30,n: the baud mode
+    if (escape == 3) { escape = 0; return; }                          // width / parity / stop
     if (escape == 4) { escape = 5; rxCursor = (size_t)value; return; }
     if (escape == 5) { escape = 0; rxCursor |= (size_t)value << 8; return; }
     if (escape == 1) {
@@ -57,7 +79,7 @@ void SpeechSynth::serialWrite(int value) {
         switch (value) {
             case 0xff: tx(0xff); break;
             case 1: escape = 2; break;
-            case 2: for (int b : txBuffer) mp3.receive(b); txBuffer.clear(); break;
+            case 2: for (int b : txBuffer) uartOut(b); txBuffer.clear(); break;
             case 3: pendingResult = (int)(avail & 0xff); break;
             case 4: pendingResult = (int)((avail >> 8) & 0xff); break;
             case 5: pendingResult = avail >= 524 ? 1 : 0; break;
@@ -72,7 +94,9 @@ void SpeechSynth::serialWrite(int value) {
             case 16: directMode = true; break;
             case 17: directMode = false; break;
             case 20: serialMode = false; txBuffer.clear(); break;      // quit and reset serial mode
-            case 30: case 31: case 32: case 33: escape = 3; break;
+            case 30: escape = 6; break;
+            case 31: case 32: case 33: escape = 3; break;
+            case 50: midiDuplex = true; midiEscape = 0; break;
             default: break;
         }
         return;
@@ -81,9 +105,14 @@ void SpeechSynth::serialWrite(int value) {
     tx(value);
 }
 
-void SpeechSynth::writePort(int, int value) {
+void SpeechSynth::writePort(int port, int value) {
     value &= 0xff;
-    if (kind == Kind::LambdaSpeak3) { ls3Write(value); return; }   // speech_ls3.cpp
+    if (kind == Kind::LambdaSpeak3) {                              // speech_ls3.cpp
+        if (ls3Mode == LS3_AMDRUM) { ls3Amdrum(value); return; }
+        (void)port;
+        ls3Write(value);
+        return;
+    }
     if (!hasRom) return;
     chip.ald_w((uint8_t)(kind == Kind::DkTronics ? (value & 0x3f) : (value & 0xff)));
 }
@@ -126,7 +155,7 @@ void SpeechSynth::advanceMicrosecond() {
     while (outPhase >= 1.0) {
         outPhase -= 1.0;
         const float t = (float)chipPhase;
-        last = previous + (current - previous) * t + ttsSample * 0.8f;
+        last = previous + (current - previous) * t + ttsSample * 0.8f + pcmSample * 0.8f;
         queue.push_back(last);
     }
     if (readIndex > 4096) { queue.erase(queue.begin(), queue.begin() + (long)readIndex); readIndex = 0; }

@@ -40,6 +40,17 @@ public:
     GX4000* emulator;
     bool enabled = false;
     int romSlot = 6;
+    // |M4ROMOFF (C_M4OFF): "Disable M4 rom until next power cycle" and reset the CPC
+    // (m4info.txt). The board pulls the CPC's RESET line; the machine takes it at its next
+    // instruction. The ROM stays off through CPC resets; powerOn() brings it back.
+    bool romOff = false;
+    bool resetLine = false;
+    // |CTRUP,"cartimg.cpr": "Upload cartridge image to M4 flash ... Format can be binary or
+    // .cpr" (up to 512 KB: see C_CTRUPLOAD). |CTR: "Start cartridge image flashed into M4 flash ...
+    // CPC PLUS only!" (m4info.txt). The flash keeps the parsed banks; ctrBoot asks the
+    // machine to start them at its next instruction.
+    std::vector<Bytes> cartFlash;
+    bool ctrBoot = false;
     Bytes rom;                       // the board's 16K ROM image (the ESP writes into it)
     Bytes hackRom;                   // the NMI hack-menu ROM (C_ROMWRITE rom 255)
     std::unique_ptr<M4Storage> storage;

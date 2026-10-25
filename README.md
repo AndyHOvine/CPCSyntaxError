@@ -95,8 +95,10 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
     as they are. This works with the OS ROMs of the 464, 664, 6128 and the Plus.
   - **Turbo**: while the tape moves, the full CPC runs faster. The speed is up to 20 times, or
     the maximum speed of your computer. All loaders work, protected loaders too.
-- **Cartridges (CPR) and snapshots (SNA)** are available. Each type of media has an **Eject**
-  command. You can drop a file on the window.
+- **Cartridges (CPR and CRO) and snapshots (SNA)** are available. Each type of media has an
+  **Eject** command. You can drop a file on the window. A **CRO** file holds groups of ROMs:
+  a group of cartridge ROMs is a Plus cartridge, and a group of CPC ROMs starts a classic CPC
+  with them fitted (Cartridge → CRO group selects the group).
 
 ### Cheats
 
@@ -144,7 +146,11 @@ Select the expansions in the **Expansions** menu or in the Settings window.
   The ROM of the card is not included. Put it in a ROM slot.
 - **Symbiface II and III**: the mouse, the clock and the **IDE/CF interface**. The IDE drive
   is a folder on your PC: `symide` next to the program, or a folder that you select. SymbOS
-  reads and writes it as one FAT16 partition.
+  reads and writes it as one FAT16 partition. The **X-MASS** is the same IDE/CF interface
+  alone, at `&FD08`.
+- **Mouse interfaces** (Input → Mouse interface): the **AMX mouse** on the joystick port, the
+  **Kempston mouse** and TotO's **MultiPlay**. They are off while a Symbiface II or III is
+  fitted, because the Symbiface has its own mouse.
 - **GFX9000** (Yamaha V9990 at `&FF60`): all the screen modes, sprites, cursors and blitter
   commands. The blitter takes its real time, and the **/WAIT** signal stops the Z80 while the
   chip is busy. The picture of the GFX9000 can be next to the CPC picture or in its own
@@ -326,7 +332,7 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | Ctrl+1 to Ctrl+9 | Load quick save slot 1 to 9 |
 | Ctrl+Shift+1 to Ctrl+Shift+9 | Save quick save slot 1 to 9 |
 | F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window) |
-| F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface) |
+| F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface or the mouse interface) |
 
 The keys go to the CPC. The exception is when a debugger or assembler window has the focus.
 
@@ -344,7 +350,8 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--crtc 0-4] [--gate-array 40007|40008|40010] [--beam] [--ram 64-4160]
           [--disk-writeback] [--record-tape out.cdt] [--tape-fast <baud>|instant|off] [--raster-overlay]
           [--hhold -79..79] [--vhold -50..50]
-          [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--ide <folder>] [--xrom <slot>=<rom file>]
+          [--m4 <folder>] [--multiface] [--sf2] [--sf3] [--xmass] [--ide <folder>] [--xrom <slot>=<rom file>]
+          [--mouse-interface amx|kempston|multiplay-a|multiplay-b] [--cro-group <n>]
           [--serial tcp:<host>:<port>|listen:<port>|com:<port>|loopback]
           [--gfx9000] [--v9990-shot gfx.bmp] [--video9000-shot mixed.bmp]
           [--opl4] [--playcity] [--speech ssa1|dktronics|lambdaspeak3] [--mp3card <folder>]
@@ -536,11 +543,13 @@ third_party/   Dear ImGui (docking branch), RASM, ymfm, the SP0256 core, minimp3
 | User interface | All options are available, in the menus Machine, Media, Video, Audio, Input, Expansions, Tools and Debug. Work continues. |
 | M4 board | Working. Files, DSK images and raw SD sectors use a folder on the PC. The ROM source of the M4 checks them. The WiFi uses the network of your PC. |
 | Multiface II | Working: STOP, the menu, save and reload. |
-| Symbiface II and III | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
+| Symbiface II and III, X-MASS | Working: the mouse, the RTC and the IDE/CF interface. The ATA standard and SymbOS check them. |
+| Mouse interfaces (AMX, Kempston, MultiPlay) | Working. Their CPCWiki pages check them. They are not yet tested with AMX Art, OCP Art Studio or Carrier Command. |
+| CRO ROM containers | Working. The two example files of the format start on the Plus. |
 | GFX9000 (V9990) and Video9000 | Working. The data comes from the application manual from Yamaha and from tests of a real V9990 on a CPC. The blitter speeds are from the measurements of openMSX. |
 | OPL4 (YMF278B) | Working (the ymfm core). It needs `yrw801*.rom` for the General MIDI samples. |
 | SSA-1 and dk'tronics speech | Working (the SP0256 core from MAME). It needs `sp0256-al2.bin`. |
-| LambdaSpeak 3 | Working: the Epson and DECtalk modes (with the voices of your computer), the SSA-1 and dk'tronics modes and the MP3 module. Not yet available: the SSA-1 speech without an SP0256 ROM, the EEPROM sampler and the Amdrum mode. |
+| LambdaSpeak 3 | Working: the Epson and DECtalk modes (with the voices of your computer), the SSA-1 and dk'tronics modes, the EEPROM, the Amdrum mode, MIDI out (Windows) and the MP3 module. |
 | DigiBlaster and AmDrum DACs | Working. |
 | Drive and keyboard sounds | Working. They are recordings of an Amiga 600 drive and a PC keyboard. You can put your own recordings in `sounds/`. |
 | RS232C serial interface | Working. The data sheets of the chips check it, and a CPC talks through it over TCP. It is not yet tested with the ROM of the card. |

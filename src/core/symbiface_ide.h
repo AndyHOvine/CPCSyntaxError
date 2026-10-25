@@ -31,6 +31,10 @@ public:
     ~SymbifaceIde();
     bool enabled = false;
     std::string folder;
+    // The X-MASS card: the same task file at &FD08-&FD0F, fully decoded (1111 1101 0000
+    // 1xxx), without the alternate status / device control and drive address at &FD06
+    // and &FD07 (CPCWiki X-MASS; SymbOS and the other Symbiface II software run on it).
+    bool xmass = false;
 
     void setEnabled(bool on);
     void setFolder(const std::string& hostFolder);   // "" = no drive fitted

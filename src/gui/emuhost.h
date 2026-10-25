@@ -193,6 +193,16 @@ public:
     std::string tapeName;
     std::string cartName;
     std::string cartPath;                  // the inserted cartridge's file ("" = none)
+    // A CRO file (core/cpr_loader.h) holds groups of ROMs. A group of bankable ROMs is a
+    // Plus cartridge; a group of low / high / Multiface II ROMs fits a classic CPC: its OS,
+    // its upper ROM slots (RLOG) and the Multiface's ROM, until the next boot or eject.
+    // croGroup picks a group by its GNUM (-1: GNUM 0, else the first).
+    int croGroup = -1;
+    std::vector<std::string> croGroupLabels;   // the loaded CRO's groups ("GNUM: label")
+    std::vector<uint32_t> croGroupNumbers;
+    struct CroRomSet { Bytes lower; std::vector<std::pair<int, Bytes>> upper; Bytes mf2; };
+    CroRomSet croSet;
+    bool loadCroGroup(uint32_t number);        // the same file, another group
     // THE GX4000 128K RAM MOD: a GX4000 has 64K; with the mod it banks 128K like a 6128
     // (the 6128 Plus's banking), so 128K software runs. Changing it restarts the cartridge.
     bool gx4000Ram128 = false;
@@ -241,6 +251,7 @@ public:
     // Both cards' IDE/CF interface: this folder is its disc ("symide" beside the program,
     // set by main). Made when the card is turned on and the folder is not there yet.
     std::string ideFolder;
+    std::string ls3EepromFile;       // LambdaSpeak 3's 128 KB EEPROM, kept between sessions ("" = not kept)
     void setIdeFolder(const std::string& folder);
     void rescanIde();
     float mouseSensitivity = 1.0f;
@@ -511,6 +522,15 @@ public:
     void setSymbiface(const std::string& module);    // none / sf2 / sf3
     void setMouseSensitivity(float s);
     bool symbifaceMouseActive() const;
+    // A MOUSE INTERFACE: "none", "amx" (joystick port), "kempston", "multiplay-a" or
+    // "multiplay-b" (the MultiPlay port the mouse is in). A Symbiface II or III has its own
+    // mouse: while one is fitted the interface is kept out (mouseInterfaceActive false).
+    std::string mouseInterface = "none";
+    void setMouseInterface(const std::string& kind);
+    void applyMouseInterface();
+    bool mouseInterfaceActive() const;
+    bool emulatedMouseActive() const { return symbifaceMouseActive() || mouseInterfaceActive(); }   // the host mouse is the CPC's
+    float mouseFracX = 0, mouseFracY = 0;      // the interfaces' fractions of a count
     void mouseMove(float dx, float dy);
     void mouseButton(int index, bool pressed);
     void mouseScroll(float delta);
@@ -579,6 +599,8 @@ private:
     void drainAudio();
     void applySettings();                    // re-apply region/joystick/DAC after a boot
     void applyExpansionRoms();               // re-fit slot ROMs after a boot
+    bool croBoot = false;                    // bootModel keeps croSet (loadCroRomSet)
+    bool loadCroRomSet(const CroRomSet& set, const std::string& path, const std::string& what);
     void applyM4();
     void applySerial();                      // re-fit the serial card after a boot
     void applyMultiface();                   // re-fit the Multiface II after a boot                          // re-enable M4 after a boot

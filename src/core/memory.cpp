@@ -55,17 +55,29 @@ void GXMemory::setSnapshotLowerRom(const Bytes& bytes) { snapshotLowerRom = norm
 void GXMemory::setSnapshotUpperRom(int index, const Bytes& bytes) { snapshotUpperRoms[index & 0xff] = normalizeRom(bytes); remap(); }
 void GXMemory::clearSnapshotRoms() { snapshotLowerRom.clear(); std::fill(snapshotUpperRoms.begin(), snapshotUpperRoms.end(), Bytes{}); remap(); }
 
+// A ROM saved by AMSDOS keeps its 128-byte header (UniDOS's unidos.rom is 16512 bytes):
+// the header is the one whose bytes 67-68 hold the 16-bit sum of bytes 0-66 (the AMSDOS
+// header checksum). A file of exactly 16K is a bare ROM and is never cut.
+static bool amsdosHeader(const Bytes& b) {
+    if (b.size() <= 128 || b.size() == (size_t)ROM_SIZE) return false;
+    unsigned sum = 0;
+    for (int k = 0; k < 67; k++) sum += b[(size_t)k];
+    return (sum & 0xffff) == (unsigned)(b[67] | b[68] << 8);
+}
+
 Bytes GXMemory::normalizeRom(const Bytes& bytes) {
     if (bytes.empty()) return Bytes{};
+    const size_t from = amsdosHeader(bytes) ? 128 : 0;
     Bytes rom(ROM_SIZE, 0);
-    int copy = std::min((int)bytes.size(), ROM_SIZE);
-    for (int k = 0; k < copy; k++) rom[k] = bytes[k];
+    const size_t copy = std::min(bytes.size() - from, (size_t)ROM_SIZE);
+    for (size_t k = 0; k < copy; k++) rom[k] = bytes[from + k];
     return rom;
 }
 void GXMemory::setUpperRomSelect(int value) { upperRom = value & 0xff; useCartridgeUpper = false; remap(); }
 void GXMemory::setUpperCartridge(int page) { upperCartridgePage = page & 0x1f; useCartridgeUpper = true; remap(); }
 void GXMemory::selectUpperCartridgeFromPort(int value) {
     value &= 0xff;
+    plusSelectedRom = value;
     setUpperCartridge(value > 0x7f ? value & 0x1f : value == 7 ? 3 : 1);
 }
 void GXMemory::setLowerCartridge(int page, int location) { lowerPage = page & 0x1f; lowerLocation = location; remap(); }
@@ -101,7 +113,18 @@ void GXMemory::setRamConfig(int value, int port) {
         if (expansionPageOffset((config & 0x38) >> 3, ram4MbSegment) < 0) config = 0;
     } else {
         ram4MbSegment = 0;
-        if (expansionPageOffset((config & 0x38) >> 3, 0) < 0) config = 0;
+        // A bank the RAM does not have: the decoder only sees the bank bits its RAM needs, so
+        // the bank folds onto the pages that are there. A 6128's own PAL sees none of bits
+        // 3-5: &7FCC is &7FC4 on a 128 KiB machine. Ignoring the write instead (C0) put the
+        // bytes of a bank probe into main RAM at &4000: SymbOS's memory test overwrote its
+        // own code there, and SymbOS never booted on a 128 KiB 6128 or 6128 Plus.
+        // With no extra RAM at all (a 464) there is no decoder and nothing answers.
+        const int page = (config & 0x38) >> 3;
+        const int pages = ((int)ram.size() - 0x10000) / 0x10000;
+        if (expansionPageOffset(page, 0) < 0) {
+            const int folded = pages > 0 ? page % pages : -1;
+            config = folded >= 0 && expansionPageOffset(folded, 0) >= 0 ? (config & 7) | (folded << 3) : 0;
+        }
     }
     ramConfig = config;
     remap();
@@ -195,14 +218,21 @@ int GXMemory::readMapped(int address) {
         if (lowerLocation == 0 && !lower.empty()) return lower[address];
     }
     if (upperEnabled && address >= 0xc000) {
+        int hooked = -1;
         if (!useCartridgeUpper && upperRomReadHandler) {
-            int hooked = upperRomReadHandler(address, upperRom);
-            if (hooked != -1) return hooked & 0xff;
+            hooked = upperRomReadHandler(address, upperRom);
+            if (hooked >= 0) return hooked & 0xff;
+        } else if (useCartridgeUpper && upperRomReadHandler && plusSelectedRom < 0x80) {
+            const int board = upperRomReadHandler(address, plusSelectedRom);
+            if (board >= 0) return board & 0xff;
         }
         if (useCartridgeUpper) { int value = cartridgeByte(upperCartridgePage, address); if (value != -1) return value; }
+        // -2: a board owns this slot but its ROM is switched off (|M4ROMOFF), so nothing answers
+        // there and the internal ROM does, as for an empty slot (not the copy kept for views).
+        const bool vacated = hooked == -2;
         const Bytes* rom = nullptr;
-        if (!snapshotUpperRoms[upperRom].empty()) rom = &snapshotUpperRoms[upperRom];
-        else if (!upperRoms[upperRom].empty()) rom = &upperRoms[upperRom];
+        if (!vacated && !snapshotUpperRoms[upperRom].empty()) rom = &snapshotUpperRoms[upperRom];
+        else if (!vacated && !upperRoms[upperRom].empty()) rom = &upperRoms[upperRom];
         else if (!snapshotUpperRoms[0].empty()) rom = &snapshotUpperRoms[0];
         else if (!upperRoms[0].empty()) rom = &upperRoms[0];
         if (rom) return (*rom)[address & 0x3fff];

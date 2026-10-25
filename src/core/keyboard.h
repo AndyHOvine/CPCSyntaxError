@@ -39,6 +39,20 @@ public:
 
     std::function<void(const std::string& mode)> onLightgunRead;
 
+    // THE AMX MOUSE on the joystick port (CPCWiki "AMX Mouse"). It has no motion counters:
+    // a movement is a LOW pulse on a direction line of row 9 (bit 0 up, 1 down, 2 left, 3
+    // right), one pulse a "mickey"; the buttons are row 9 bits 4 (left), 5 (right) and 6
+    // (middle), LOW when pressed. "The value updates when the row is deselected": each time
+    // the CPC selects another row after row 9 the interface shows the next step. Its two
+    // dual flip-flops (MC14013) hold one movement each way between steps, so at most one
+    // mickey a step on each axis ("maximum is 300 mickeys per second" at AMX Art's 300 Hz).
+    bool amxEnabled = false;
+    int amxMoveX = 0, amxMoveY = 0;    // movement held for the next step: -1, 0 or 1
+    int amxButtons = 0;                // bit 0 left, 1 right, 2 middle held
+    int amxLines = 0xff;               // the direction lines as the last step left them
+    void amxMove(int dx, int dy);
+    void amxButton(int index, bool pressed);
+
     KeyboardMatrix();
     void reset();
     std::string setRegion(const std::string& region = "uk");
@@ -52,7 +66,7 @@ public:
     void setLightgunType(const std::string& type = "trojan");
     void setLightgunBeamHit(bool hit);
     void setLightgunTrigger(bool pressed);
-    void selectRow(int row) { selectedRow = row & 0x0f; }
+    void selectRow(int row);
     int read() { return read(selectedRow); }
     int read(int row);
     // Diagnostic: every matrix row the machine reads, with what it saw. Unset in normal

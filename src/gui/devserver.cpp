@@ -526,7 +526,7 @@ struct DevServer::Impl {
         if (ext == ".sna") {
             ok = host.loadSnapshot(r.path);
             if (ok) startRunning();
-        } else if (ext == ".cpr") {
+        } else if (ext == ".cpr" || ext == ".cro") {
             ok = host.loadCartridgeFile(r.path);
             if (ok) startRunning();
         } else if (disc || tape) {
@@ -578,7 +578,7 @@ struct DevServer::Impl {
         self.lastEvent = host.status;
         if (!r.command.empty()) {
             // After a reset or a cartridge the firmware needs its start-up first.
-            if (r.reset || ext == ".cpr") typeFrom = host.framesRun + FIRMWARE_FRAMES;
+            if (r.reset || ext == ".cpr" || ext == ".cro") typeFrom = host.framesRun + FIRMWARE_FRAMES;
             if (paused()) startRunning();
             queueText(r.command);
             // A tape's RUN" asks "Press PLAY then any key": answer it once it is up (a key

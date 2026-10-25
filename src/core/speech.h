@@ -73,7 +73,17 @@ public:
     bool serialMode = false;
 
     // LambdaSpeak 3's modes, numbered as its firmware's CUR_MODE (&F2 / &CF report them).
-    enum Ls3Mode { LS3_SSA1 = 0, LS3_EPSON = 1, LS3_DECTALK = 2, LS3_DK = 3, LS3_SSA1_SP0 = 5, LS3_DK_SP0 = 6, LS3_SERIAL = 9 };
+    enum Ls3Mode { LS3_SSA1 = 0, LS3_EPSON = 1, LS3_DECTALK = 2, LS3_DK = 3, LS3_AMDRUM = 4, LS3_SSA1_SP0 = 5, LS3_DK_SP0 = 6,
+                   LS3_EEPROM_UPLOAD = 7, LS3_EEPROM_PLAY = 8, LS3_SERIAL = 9 };
+    // The 128 KB SPI EEPROM (25LC1024): pages of 512 bytes, persistent. setEepromFile names
+    // the host file it lives in ("" = none); it is read now and written after each change.
+    Bytes eeprom = Bytes(0x20000, 0xff);
+    void setEepromFile(const std::string& path);
+    std::string eepromPath;
+    // The UART bytes LambdaSpeak 3 sends at 31250 baud (baud mode 6, MIDI) go here rather than
+    // to the MP3 module: the host's MIDI out (host_midi.h), or a test's sink.
+    std::function<void(int)> midiOut;
+    int serialBaud = 0;              // the last &FF,30,n (0 = the power-on 9600)
     int ls3Mode = LS3_SSA1;
     // its settings (power-on values from its firmware)
     bool ls3Blocking = true, ls3Confirm = true, ls3NonBlockConfirm = false;
@@ -100,6 +110,7 @@ private:
     size_t rxCursor = 0;
     void serialWrite(int value);
     void tx(int value);
+    void uartOut(int value);
 
     // LambdaSpeak 3's own work, one step after another: a byte on the bus for a time, or a
     // sentence spoken (the bus 0, or what a getter left there). While a step runs the board
@@ -113,6 +124,10 @@ private:
         size_t played = 0;           // its samples heard so far
         double playPhase = 0;
         bool started = false;
+        Bytes pcm;                   // 8-bit PCM played on the board's own DAC, a byte each pcmUs
+        int pcmUs = 0;
+        std::function<void()> then;  // done when the step ends (a job's next stage)
+        bool listening = false;      // the board still reads the bus (the emulated SSA-1's speech)
     };
     std::deque<Step> steps;
     long long stepUs = 0;            // how long the front step has run
@@ -121,6 +136,36 @@ private:
     int ls3Pending = 0;              // bytes a command still takes (&F0, &DB, &DA): how many
     int ls3LastMode = LS3_SSA1;
     float ttsSample = 0.0f;
+    float pcmSample = 0.0f;          // the board's PCM DAC (EEPROM play, Amdrum), -1..1
+    void saveEeprom();
+    // EEPROM jobs: which byte the board waits for next.
+    enum EepromStage { EE_NONE, EE_START, EE_PAGES, EE_DATA, EE_GET_START, EE_GET_PAGES, EE_GET_DATA };
+    int eeStage = EE_NONE;
+    bool eeTesting = false;          // &FE plays the upload back; &F9 does not
+    int eeStart = 0, eePages = 0;
+    size_t eeAddress = 0, eeEnd = 0;
+    int eeBus = 32;                  // what a download puts on the bus
+    // EEPROM play (&FA-&FD): the 0-separated command, and the channels.
+    int playChannels = 1;
+    bool playLastZero = false;
+    int playChannel = 0, playStart = 0, playEnd = 0;
+    struct PcmChannel { size_t address = 1, end = 0; int speed = 0; long long sinceUs = 0; int value = 0; };
+    std::array<PcmChannel, 4> pcmChannels{};
+    void eepromByte(int value);
+    void playByte(int value);
+    void playAdvance();
+    // Amdrum (&E3): &FFxx is the DAC; a byte sequence leaves the mode.
+    int amdrumExit = 0, amdrumLast = 0;
+    void ls3Amdrum(int value);
+    // SSA-1 / dk'tronics emulation (&ED / &EC): allophones are collected and spoken through
+    // DECtalk phonemes once the CPC has been quiet for the flush delay.
+    std::vector<int> allophones;
+    long long allophoneQuietUs = -1; // since the last allophone (-1: none waiting)
+    int allophoneBusyUs = 0;         // the board reading an allophone (not listening)
+    void speakAllophones();
+    // MIDI full duplex (&FF,50): 255 escapes, 255 255 sends 255, 255 20 leaves.
+    bool midiDuplex = false;
+    int midiEscape = 0;
     void ls3Reset();
     void ls3Write(int value);
     int ls3Read();

@@ -468,10 +468,10 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         }
         ImGui::InvisibleButton("##screenarea", ImVec2(std::max(1.0f, avail.x), std::max(1.0f, avail.y)));
         screenHovered = ImGui::IsItemHovered();
-        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.symbifaceMouseActive() && !host.lightgunActive() && !host.mouseCaptured)
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Left) && host.emulatedMouseActive() && !host.lightgunActive() && !host.mouseCaptured)
             mouseCaptureRequested = true;
         if (host.lightgunActive() && !gfxOnMain) lightgunFromScreen(ox, oy, drawW, drawH, info.textureWidth, info.textureHeight);
-        if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.symbifaceMouseActive() && !host.lightgunActive()
+        if (screenHovered && ImGui::IsMouseDoubleClicked(0) && !host.emulatedMouseActive() && !host.lightgunActive()
             && toggleFullscreen) toggleFullscreen();
     }
     ImGui::End();
@@ -488,7 +488,7 @@ void GuiShell::drawStatusBar(const ShellFrameInfo& info) {
         ImGui::PushStyleColor(ImGuiCol_Text, kAccent);
         ImGui::TextUnformatted(host.paused ? "PAUSED" : (host.turbo ? "TURBO" : host.tapeTurboActive() ? "TAPE TURBO" : "RUNNING"));
         if (host.mouseCaptured) { after().text("  MOUSE CAPTURED (F12 or middle button releases)"); }
-        else if (host.symbifaceMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
+        else if (host.emulatedMouseActive()) { after().textDisabled("  click the picture to use the mouse"); }
         if (host.recording()) {
             char rec[64];
             const int s = (int)host.recorder.seconds();
@@ -775,7 +775,7 @@ void GuiShell::menuFile() {
         if (ImGui::MenuItem("Disk into drive A...")) browser.open("Insert disk A", host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this](const std::string& p) { host.loadDiskFile(p, 0); });
         if (ImGui::MenuItem("Disk into drive B...")) browser.open("Insert disk B", host.romDir, { ".dsk", ".edsk", ".hfe", ".ipf" }, [this](const std::string& p) { host.loadDiskFile(p, 1); });
         if (ImGui::MenuItem("Tape...")) browser.open("Insert tape", host.romDir, { ".cdt", ".tzx", ".tap", ".wav" }, [this](const std::string& p) { host.loadTapeFile(p); });
-        if (ImGui::MenuItem("Cartridge (.cpr)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+        if (ImGui::MenuItem("Cartridge (.cpr, .cro)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".cro", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
         if (ImGui::MenuItem("Snapshot (.sna)...")) browser.open("Load snapshot", host.romDir, { ".sna" }, [this](const std::string& p) { host.loadSnapshot(p); });
         ImGui::Separator();
         if (ImGui::MenuItem("Assembler source...")) { panelOpen("Assembler") = true; assembler->requestOpen(); }
@@ -883,8 +883,18 @@ void GuiShell::menuMedia() {
     }
     if (ImGui::BeginMenu("Cartridge")) {
         if (!host.cartName.empty()) ImGui::TextDisabled("%s", host.cartName.c_str());
-        if (ImGui::MenuItem("Load cartridge (.cpr)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+        if (ImGui::MenuItem("Load cartridge (.cpr, .cro)...")) browser.open("Load cartridge", host.romDir, { ".cpr", ".cro", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
         if (ImGui::MenuItem("Eject", nullptr, false, !host.cartName.empty())) host.ejectCartridge();
+        // A CRO with more than one group: which one the machine runs.
+        if (host.croGroupLabels.size() > 1 && ImGui::BeginMenu("CRO group")) {
+            for (size_t i = 0; i < host.croGroupLabels.size(); i++) {
+                const bool on = host.croGroup >= 0 ? (uint32_t)host.croGroup == host.croGroupNumbers[i]
+                                                   : host.croGroupNumbers[i] == 0;
+                if (ImGui::MenuItem((host.croGroupLabels[i] + "##crogroup" + std::to_string(i)).c_str(), nullptr, on))
+                    host.loadCroGroup(host.croGroupNumbers[i]);
+            }
+            ImGui::EndMenu();
+        }
         ImGui::EndMenu();
     }
     if (ImGui::BeginMenu("Snapshot")) {
@@ -1168,7 +1178,7 @@ void GuiShell::recentFilesMenu() {
         const bool there = std::filesystem::is_regular_file(path, ec);
         std::string ext = path.extension().u8string();
         for (char& c : ext) c = (char)std::tolower((unsigned char)c);
-        const char* kind = ext == ".cpr" ? "cartridge" : ext == ".sna" ? "snapshot"
+        const char* kind = ext == ".cpr" || ext == ".cro" ? "cartridge" : ext == ".sna" ? "snapshot"
                          : (ext == ".cdt" || ext == ".tzx" || ext == ".tap" || ext == ".wav") ? "tape" : "disc";
         char label[400];
         std::snprintf(label, sizeof label, "%zu  %s##recent%zu", i + 1, path.filename().u8string().c_str(), i);
@@ -1303,7 +1313,7 @@ void GuiShell::windowMedia() {
             loaded(host.cartName, "(no cartridge)");
             FlowRow row;
             if (row.smallButton("Load .CPR..."))
-                browser.open("Load cartridge", host.romDir, { ".cpr", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
+                browser.open("Load cartridge", host.romDir, { ".cpr", ".cro", ".bin" }, [this](const std::string& p) { host.loadCartridgeFile(p); });
             ImGui::BeginDisabled(host.cartName.empty());
             if (row.smallButton("Eject")) host.ejectCartridge();
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
