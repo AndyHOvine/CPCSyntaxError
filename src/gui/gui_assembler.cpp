@@ -16,6 +16,7 @@
 #include "gui_widgets.h"
 #include "rasm_bridge.h"
 #include "core/emulator.h"
+#include "core/gate_array.h"
 #include "core/memory.h"
 #include "core/z80.h"
 
@@ -230,7 +231,7 @@ void AssemblerWindow::refreshErrorLines() {
 
 void AssemblerWindow::requestOpen() {
     std::string dir = path.empty() ? host.romDir : std::filesystem::path(path).parent_path().string();
-    browser.open("Open source", dir, { ".asm", ".z80", ".s", ".txt", ".inc", ".mac" },
+    browser.open("Open source", dir, { ".asm", ".z80", ".s", ".txt", ".inc", ".mac", ".c", ".h" },
                  [this](const std::string& p) { openFile(p); });
 }
 
@@ -255,6 +256,10 @@ void AssemblerWindow::loadSettings(const std::map<std::string, std::string>& ini
         const unsigned long v = std::strtoul(it->second.c_str(), &end, 16);
         if (end && !*end) colours[k] = (uint32_t)v & 0xffffff;
     }
+    if ((it = ini.find("asm_sdcc")) != ini.end()) ctools.sdccFolder = it->second;
+    if ((it = ini.find("asm_cpctelera")) != ini.end()) ctools.cpcteleraFolder = it->second;
+    if ((it = ini.find("asm_cflags")) != ini.end()) ctools.extraFlags = it->second;
+    if ((it = ini.find("asm_codeloc")) != ini.end()) ctools.codeLoc = (int)std::strtol(it->second.c_str(), nullptr, 0) & 0xffff;
     it = ini.find("asm_file");
     if (it != ini.end() && !it->second.empty()) {
         std::error_code ec;
@@ -267,6 +272,12 @@ void AssemblerWindow::saveSettings(std::ostream& out) const {
     out << "asm_brk=" << (brkLabels ? 1 : 0) << "\n";
     out << "asm_file=" << (activeTab == 0 || tabs.empty() ? path : tabs[0].path) << "\n";   // the main file: it brings its links
     out << "asm_highlight=" << (highlight ? 1 : 0) << "\n";
+    out << "asm_sdcc=" << ctools.sdccFolder << "\n";
+    out << "asm_cpctelera=" << ctools.cpcteleraFolder << "\n";
+    out << "asm_cflags=" << ctools.extraFlags << "\n";
+    char loc[16];
+    std::snprintf(loc, sizeof loc, "0x%04X", ctools.codeLoc & 0xffff);
+    out << "asm_codeloc=" << loc << "\n";
     for (size_t k = 0; k < colours.size(); k++) {
         char hex[8];
         std::snprintf(hex, sizeof hex, "%06X", (unsigned)colours[k] & 0xffffff);
@@ -372,9 +383,173 @@ static std::string cleanMessage(const char* raw, int length) {
     return out;
 }
 
+bool AssemblerWindow::cMode() const {
+    const std::string mainPath = activeTab == 0 || tabs.empty() ? path : tabs[0].path;
+    std::string ext = std::filesystem::path(mainPath).extension().string();
+    for (char& c : ext) c = (char)std::tolower((unsigned char)c);
+    return ext == ".c";
+}
+
+// F9 on a C file: every edited tab saved (SDCC reads its files from disc), then the build
+// on a thread (c_build.h).
+void AssemblerWindow::startCBuild(bool thenRun, bool assetsOnly) {
+    namespace fs = std::filesystem;
+    if (cRun && !cRun->done) return;            // one build at a time
+    if (cRun) finishCBuild();
+    storeActive();
+    std::string notSaved;
+    for (size_t i = 0; i < tabs.size(); i++) {
+        Tab& t = tabs[i];
+        if (!t.modified || t.path.empty()) continue;
+        std::string why;
+        if (writeFileSafely(t.path, t.source.data(), t.source.size(), &why)) {
+            t.modified = false;
+            if ((int)i == activeTab) modified = false;
+        } else notSaved += " " + fs::path(t.path).filename().string();
+    }
+    messages.clear(); errorLines.clear();
+    if (!notSaved.empty()) { Message m; m.text = "Could not save before building:" + notSaved; messages.push_back(m); }
+    const std::string mainPath = tabs[0].path;
+    std::error_code ec;
+    const std::string cache = (fs::temp_directory_path(ec) / "cpcse-cbuild").u8string();
+    auto run = std::make_shared<CRun>();
+    run->thenRun = thenRun;
+    run->assetsOnly = assetsOnly;
+    CRun* r = run.get();
+    CToolchain tools = ctools;
+    tools.assetsOnly = assetsOnly;           // every asset step again, then stop
+    run->worker = std::thread([r, tools, mainPath, cache]() {
+        CBuildResult result = buildC(tools, mainPath, cache, [r](const std::string& line) {
+            std::lock_guard<std::mutex> g(r->lock);
+            r->progress = line;
+        });
+        std::lock_guard<std::mutex> g(r->lock);
+        r->result = std::move(result);
+        r->done = true;
+    });
+    cRun = run;
+    lastOk = false;
+    summary = assetsOnly ? "Converting assets..." : "Building...";
+}
+
+// The build's result, taken in on the UI thread: messages on their tabs, the bytes into the
+// machine, the map's symbols to the debugger, and the run from _main when asked.
+void AssemblerWindow::finishCBuild() {
+    if (!cRun) return;
+    if (cRun->worker.joinable()) cRun->worker.join();
+    const CBuildResult res = cRun->result;
+    const bool thenRun = cRun->thenRun, assetsOnly = cRun->assetsOnly;
+    cRun.reset();
+    cLog = res.log;
+    for (const CBuildMessage& cm : res.messages) {
+        Message m;
+        m.file = cm.file;
+        m.line = cm.line;
+        m.text = cm.text;
+        m.tab = tabFor(cm.file);
+        messages.push_back(m);
+    }
+    refreshErrorLines();
+    if (assetsOnly) {
+        // the log's "Assets: N converted, M up to date" line is the summary; nothing to load
+        lastOk = res.ok;
+        const size_t at = res.log.rfind("Assets: ");
+        std::string line = at == std::string::npos ? std::string() : res.log.substr(at, res.log.find('\n', at) - at);
+        if (res.ok) summary = line.empty() ? "Assets converted" : line;
+        else {
+            int errors = 0;
+            for (const CBuildMessage& m : res.messages) if (m.error) errors++;
+            summary = "Asset conversion failed: " + std::to_string(errors) + " error" + (errors == 1 ? "" : "s");
+        }
+        return;
+    }
+    symbols = res.symbols;
+    lastOk = res.ok;
+    lastStart = res.loadAddress; lastRun = res.runAddress; lastLength = (int)res.bytes.size();
+    if (!res.ok) {
+        int errors = 0;
+        for (const CBuildMessage& m : res.messages) if (m.error) errors++;
+        summary = "Build failed: " + std::to_string(errors) + " error" + (errors == 1 ? "" : "s");
+        return;
+    }
+    char b[200];
+    if (host.booted() && host.emu && host.emu->memory) {
+        for (size_t i = 0; i < res.bytes.size(); i++) host.emu->memory->write((res.loadAddress + (int)i) & 0xffff, res.bytes[i]);
+        host.timelineEdited();
+        std::snprintf(b, sizeof b, "Built %s: %d bytes, loaded at &%04X-&%04X", res.project.c_str(), (int)res.bytes.size(),
+                      res.loadAddress & 0xffff, (res.loadAddress + (int)res.bytes.size() - 1) & 0xffff);
+    } else {
+        std::snprintf(b, sizeof b, "Built %s: %d bytes at &%04X (no machine to load them into)", res.project.c_str(),
+                      (int)res.bytes.size(), res.loadAddress & 0xffff);
+    }
+    summary = b;
+    debugger.setSymbols(symbols);
+    if (thenRun && host.booted() && !res.bytes.empty()) {
+        // as a CPC runs a binary from BASIC (EmuHost::startProgram): a reset to the prompt,
+        // the bytes put back, MC START PROGRAM to _main
+        std::string how;
+        host.startProgram(res.bytes, res.loadAddress, res.runAddress, how);
+        debugger.run();
+        std::snprintf(b, sizeof b, "  -- running from _main &%04X (%s)", res.runAddress & 0xffff, how.c_str());
+        summary += b;
+    }
+}
+
+// A program run where a ROM sits over it would run the ROM: the firmware itself keeps its
+// ROMs paged out and pages them in only inside its own calls, and a binary started from
+// BASIC (MC START PROGRAM) runs from RAM. So before the jump the GATE ARRAY's RMR (&7Fxx,
+// bits 7-6 = 10) gets bit 2 (lower ROM off) when the program reaches into &0000-&3FFF and
+// bit 3 (upper ROM off) when it reaches into &C000-&FFFF; the mode bits stay as they are.
+void AssemblerWindow::pageForRun(int start, int length) {
+    if (!host.booted() || !host.emu || !host.emu->gateArray || length <= 0) return;
+    const int first = start & 0xffff, last = std::min(0xffff, first + length - 1);
+    int rmr = host.emu->gateArray->romConfig & 0x0f;
+    if (first < 0x4000) rmr |= 0x04;
+    if (last >= 0xc000) rmr |= 0x08;
+    if (rmr != (host.emu->gateArray->romConfig & 0x0f)) host.emu->writePort(0x7f00, 0x80 | rmr);
+}
+
+void AssemblerWindow::cSettingsPopup() {
+    if (!ImGui::BeginPopup("C settings")) return;
+    ImGui::TextUnformatted("C programs: SDCC, and CPCtelera's library");
+    ImGui::Separator();
+    static char sdccBuf[512], cpctBuf[512], flagsBuf[256];
+    static bool loaded = false;
+    if (!loaded || ImGui::IsWindowAppearing()) {
+        std::snprintf(sdccBuf, sizeof sdccBuf, "%s", ctools.sdccFolder.c_str());
+        std::snprintf(cpctBuf, sizeof cpctBuf, "%s", ctools.cpcteleraFolder.c_str());
+        std::snprintf(flagsBuf, sizeof flagsBuf, "%s", ctools.extraFlags.c_str());
+        loaded = true;
+    }
+    fitNextItemWidth(360, "SDCC folder");
+    if (ImGui::InputTextWithHint("SDCC folder", "empty: C:\\Program Files\\SDCC, or the PATH", sdccBuf, sizeof sdccBuf)) ctools.sdccFolder = sdccBuf;
+    if (after().smallButton("Browse...##sdcc"))
+        browser.openDir("SDCC folder", ctools.sdccFolder.empty() ? host.romDir : ctools.sdccFolder,
+                        [this](const std::string& d) { ctools.sdccFolder = d; std::snprintf(sdccBuf, sizeof sdccBuf, "%s", d.c_str()); });
+    const std::string bin = findSdccBin(ctools.sdccFolder);
+    ImGui::TextDisabled("  %s", bin.empty() ? "SDCC not found (sdcc.sourceforge.net: install it, then name its folder)" : ("found: " + bin).c_str());
+    fitNextItemWidth(360, "CPCtelera folder");
+    if (ImGui::InputTextWithHint("CPCtelera folder", "empty: plain SDCC, no library", cpctBuf, sizeof cpctBuf)) ctools.cpcteleraFolder = cpctBuf;
+    if (after().smallButton("Browse...##cpct"))
+        browser.openDir("CPCtelera folder", ctools.cpcteleraFolder.empty() ? host.romDir : ctools.cpcteleraFolder,
+                        [this](const std::string& d) { ctools.cpcteleraFolder = d; std::snprintf(cpctBuf, sizeof cpctBuf, "%s", d.c_str()); });
+    if (!ctools.cpcteleraFolder.empty()) {
+        const std::string cpct = findCpctelera(ctools.cpcteleraFolder);
+        ImGui::TextDisabled("  %s", cpct.empty() ? "no src/cpctelera.h there" : ("library from: " + cpct + "/src (built once, no Cygwin needed)").c_str());
+    }
+    int loc = ctools.codeLoc;
+    fitNextItemWidth(120, "Code address");
+    if (ImGui::InputInt("Code address", &loc, 0x100, 0x1000, ImGuiInputTextFlags_CharsHexadecimal)) ctools.codeLoc = std::clamp(loc, 0, 0xffff);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the code goes (hex). A CPCtelera project's cfg/build_config.mk (Z80CODELOC) wins.");
+    fitNextItemWidth(360, "Extra sdcc flags");
+    if (ImGui::InputText("Extra sdcc flags", flagsBuf, sizeof flagsBuf)) ctools.extraFlags = flagsBuf;
+    ImGui::EndPopup();
+}
+
 void AssemblerWindow::assemble(bool thenRun) {
     namespace fs = std::filesystem;
     std::error_code ec;
+    if (cMode()) { startCBuild(thenRun); return; }
     // rasm reads the linked files from disk: an edited tab is saved first, so it assembles
     // what is on show. The main file goes in from its tab, saved or not.
     storeActive();
@@ -452,6 +627,7 @@ void AssemblerWindow::assemble(bool thenRun) {
         }
         if (thenRun && outLength > 0 && host.booted()) {
             int entry = lastRun >= 0 ? lastRun : lastStart;
+            pageForRun(lastStart, outLength);
             debugger.setPc(entry);
             debugger.run();
             std::snprintf(b, sizeof(b), "  -- running from &%04X", entry & 0xffff);
@@ -496,19 +672,41 @@ void AssemblerWindow::draw(bool* open) {
         if (io.KeyCtrl && ImGui::IsKeyPressed(ImGuiKey_O, false)) requestOpen();
     }
 
+    if (cRun) {
+        bool done;
+        { std::lock_guard<std::mutex> g(cRun->lock); done = cRun->done; }
+        if (done) finishCBuild();
+    }
+    const bool c = cMode();
+    const bool building = cRun != nullptr;
+
     // ---- toolbar
     if (ImGui::Button("New")) newFile();
     if (after().button("Open...")) requestOpen();
     if (after().button("Save")) requestSave(false);
     if (after().button("Save as...")) requestSave(true);
     after().textDisabled("|");
-    if (after().button("Assemble (F9)")) assemble(false);
-    if (after().button("Assemble + run (Ctrl+F9)")) assemble(true);
-    after().field(130, "##syntax");
-    ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("rasm's compatibility switches");
-    after().checkbox("BRK labels", &brkLabels);
-    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
+    ImGui::BeginDisabled(building);
+    if (after().button(c ? "Build (F9)" : "Assemble (F9)")) assemble(false);
+    if (after().button(c ? "Build + run (Ctrl+F9)" : "Assemble + run (Ctrl+F9)")) assemble(true);
+    if (c) {
+        if (after().button("Convert assets")) startCBuild(false, true);
+        if (ImGui::IsItemHovered())
+            ImGui::SetTooltip("Runs every asset step of the CPCtelera project again (images, maps, music, .bin files),\n"
+                              "as its cfg/*.mk files name them. F9 runs only the steps whose outputs are older than their inputs.");
+    }
+    ImGui::EndDisabled();
+    if (c) {
+        if (after().button("C settings...")) ImGui::OpenPopup("C settings");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("SDCC's folder, CPCtelera's folder, the code address");
+        cSettingsPopup();
+    } else {
+        after().field(130, "##syntax");
+        ImGui::Combo("##syntax", &syntax, SYNTAX_NAMES, IM_ARRAYSIZE(SYNTAX_NAMES));
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("rasm's compatibility switches");
+        after().checkbox("BRK labels", &brkLabels);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Labels named BRK..., @BRK... or ....BRK become breakpoints (rasm -eb)");
+    }
     if (after().button("Colours...")) ImGui::OpenPopup("Code colours");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Syntax colouring: on or off, and a colour for each kind of word");
     coloursPopup();
@@ -562,15 +760,15 @@ void AssemblerWindow::draw(bool* open) {
                                 ImGuiInputTextFlags_CallbackAlways;
     // Coloured: the box's own text invisible (its cursor and selection are not), the
     // spans drawn over it.
-    if (highlight) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
+    if (highlight && !c) ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0, 0, 0, 0));
     if (ImGui::InputTextMultiline("##asmsrc", source.data(), source.capacity() + 1, ImVec2(-1, editorH), flags,
                                   &AssemblerWindow::editorCallback, this)) {
         modified = true;
         sourceRevision++;
         lineCount = countLines(source);
     }
-    if (highlight) ImGui::PopStyleColor();
-    if (highlight) drawHighlighted(childName, lineH, editorH);
+    if (highlight && !c) ImGui::PopStyleColor();
+    if (highlight && !c) drawHighlighted(childName, lineH, editorH);
     float scrollY = 0.0f;
     if (ImGuiWindow* child = ImGui::FindWindowByName(childName)) scrollY = child->Scroll.y;
     {
@@ -596,8 +794,10 @@ void AssemblerWindow::draw(bool* open) {
     // ---- result
     {
         FlowRow result;
+        std::string shown = summary;
+        if (building) { std::lock_guard<std::mutex> g(cRun->lock); if (!cRun->progress.empty()) shown = "Building: " + cRun->progress; }
         result.textColored(lastOk ? ImVec4(0.5f, 0.9f, 0.5f, 1) : (messages.empty() ? ImVec4(0.7f, 0.7f, 0.7f, 1) : ImVec4(1.0f, 0.45f, 0.4f, 1)),
-                           summary.c_str());
+                           shown.c_str());
         if (lastOk && lastRun >= 0) { char r[16]; std::snprintf(r, sizeof r, "RUN &%04X", lastRun & 0xffff); result.textDisabled(r); }
     }
     if (ImGui::BeginTabBar("##asmresult")) {
@@ -658,6 +858,14 @@ void AssemblerWindow::draw(bool* open) {
                 }
                 ImGui::EndTable();
             }
+            ImGui::EndTabItem();
+        }
+        if (c && ImGui::BeginTabItem("Build log###clog")) {
+            ImGui::BeginChild("##clog", ImVec2(0, 0), ImGuiChildFlags_Borders, ImGuiWindowFlags_HorizontalScrollbar);
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextUnformatted(cLog.empty() ? "Every command of the last build and what it printed." : cLog.c_str());
+            ImGui::PopTextWrapPos();
+            ImGui::EndChild();
             ImGui::EndTabItem();
         }
         ImGui::EndTabBar();

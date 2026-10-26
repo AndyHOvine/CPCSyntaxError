@@ -5,12 +5,16 @@
 #pragma once
 #include <functional>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <ostream>
 #include <set>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "asm_highlight.h"
+#include "c_build.h"
 
 struct ImFont;
 struct ImGuiInputTextCallbackData;
@@ -31,6 +35,12 @@ public:
     std::function<void(int address)> showInDisassembly;
 
     void assemble(bool thenRun);                // F9 / Ctrl+F9
+    // A C build runs on a thread and draw() takes its result in; this waits for it instead
+    // (the checks, which draw no frames).
+    void waitForBuild() { if (cRun) finishCBuild(); }
+    void setCToolchain(const CToolchain& t) { ctools = t; }
+    const CToolchain& cToolchain() const { return ctools; }
+    const std::string& buildLog() const { return cLog; }
     void setSource(const std::string& text) { source = text; modified = true; sourceRevision++; }
     const std::string& resultSummary() const { return summary; }
     bool assembledOk() const { return lastOk; }
@@ -101,6 +111,26 @@ private:
     void indexLines();
     void drawHighlighted(const char* childName, float lineH, float editorH);
     void coloursPopup();
+
+    // C (c_build.h): a main file ending .c is built with SDCC, and CPCtelera's library when
+    // its folder is set, instead of rasm. The build runs on a thread; draw() takes its
+    // result in when it is done.
+    CToolchain ctools;
+    bool cMode() const;
+    struct CRun {
+        std::thread worker;
+        std::mutex lock;
+        std::string progress;
+        bool done = false, thenRun = false, assetsOnly = false;
+        CBuildResult result;
+        ~CRun() { if (worker.joinable()) worker.join(); }
+    };
+    std::shared_ptr<CRun> cRun;
+    std::string cLog;                           // the last build's commands and what they printed
+    void pageForRun(int start, int length);     // the ROMs over the program paged out before it runs
+    void startCBuild(bool thenRun, bool assetsOnly = false);   // assetsOnly: "Convert assets"
+    void finishCBuild();
+    void cSettingsPopup();
 
     int gotoLine = -1;                          // move the editor's cursor here next frame
     static int editorCallback(ImGuiInputTextCallbackData* data);

@@ -333,6 +333,12 @@ public:
     bool ejectSnapshot();
     bool saveSnapshot(const std::string& path);
     bool loadSnapshot(const std::string& path);
+    // A built program (the assembler's C build) started as a CPC starts a binary from BASIC:
+    // the machine reset to the BASIC prompt, the bytes put in RAM, then the firmware's MC
+    // START PROGRAM (&BD16; HL = the entry, C = &FF: both ROMs off), which sets up the
+    // firmware and the stack and jumps to it. A GX4000 has no firmware: the ROMs over the program are paged
+    // out and the PC set. `how` says which. False with no machine.
+    bool startProgram(const std::vector<uint8_t>& bytes, int load, int run, std::string& how);
 
     // ---- RECORDING (core/media_recorder.h): every frame's picture and sound to a file ----
     // "mjpeg" (an AVI most players play), "zmbv" (a lossless AVI) or, by the file's name, a

@@ -38,6 +38,7 @@
 #include "cpc_typing.h"
 #include "devserver.h"
 #include "emuhost.h"
+#include "c_build.h"
 #include "version.h"
 #include "core/machine_sounds.h"
 #include "gui_shell.h"
@@ -233,7 +234,7 @@ int main(int argc, char** argv) {
     // uses, with no window. --shot out.bmp [--model id] [--sna f] [--crtc N] [--gate-array 40007|40008|40010]
     // [--frames N] [--beam] [--gfx9000] [--v9990-shot out.bmp] (the GFX9000's own monitor).
     {
-        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, wavPath, speechKind, mp3Card, dacType; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
+        std::string shot, modelId, snaPath, saveSnaPath, dumpRamPath, diskPath, cartPath, tapePath, typeStr, keysStr; int croGroup = -1, wantCrtc = -1, wantGa = 0, frames = 200, f1at = -1, wantRam = -1, seq = 0; bool beam = false, diag = false, gfx9000 = false, opl4 = false, playcity = false; std::string v9990Shot, video9000Shot, m4Folder, ideFolder, mouseScript, mouseInterface, cbuildPath, cbuildCpct, cbuildSdcc, wavPath, speechKind, mp3Card, dacType; int cbuildLoc = -1; bool cbuildForce = false; bool sf2 = false, sf3 = false, xmass = false, multiface = false, diskWriteBack = false; int monitorHHold = std::getenv("CPCSE_MONITOR_HHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_HHOLD")) : 0; int monitorVHold = std::getenv("CPCSE_MONITOR_VHOLD") ? std::atoi(std::getenv("CPCSE_MONITOR_VHOLD")) : 0; std::vector<std::string> xroms; std::string serialLine, recordTape, tapeFast, recordPath, recordFormat = "mjpeg"; bool rasterOverlayOn = false; bool z80Cmos = false, gx4000Ram128 = false, plusExpansionClassic = true; std::string monitorSet; TubeKnobs monitorKnobs; std::array<int, 3> monitorIntensity = TubeKnobs().intensity;
         for (int i = 1; i < argc; i++) { std::string a = argv[i];
             if (a == "--shot" && i + 1 < argc) shot = argv[++i];
             else if (a == "--ram" && i + 1 < argc) wantRam = std::atoi(argv[++i]);
@@ -244,6 +245,11 @@ int main(int argc, char** argv) {
             else if (a == "--disk" && i + 1 < argc) diskPath = argv[++i];
             else if (a == "--cart" && i + 1 < argc) cartPath = argv[++i];
             else if (a == "--cro-group" && i + 1 < argc) croGroup = std::atoi(argv[++i]);   // the CRO group (GNUM) --cart takes
+            else if (a == "--cbuild" && i + 1 < argc) cbuildPath = argv[++i];        // build this C file's project with SDCC, then run it
+            else if (a == "--cpctelera" && i + 1 < argc) cbuildCpct = argv[++i];     // ...with CPCtelera's library from this folder
+            else if (a == "--sdcc" && i + 1 < argc) cbuildSdcc = argv[++i];          // ...SDCC from this folder (default: found)
+            else if (a == "--codeloc" && i + 1 < argc) cbuildLoc = (int)std::strtol(argv[++i], nullptr, 0);   // without cfg/build_config.mk
+            else if (a == "--force-assets") cbuildForce = true;                    // run every CPCtelera asset step again
             else if (a == "--tape" && i + 1 < argc) tapePath = argv[++i];   // .cdt/.tzx/.wav in the deck
             else if (a == "--record-tape" && i + 1 < argc) recordTape = argv[++i];   // a blank tape, REC down; saved here at the end
             else if (a == "--tape-fast" && i + 1 < argc) tapeFast = argv[++i];   // fast loading: a baud rate, instant, or off
@@ -356,6 +362,25 @@ int main(int argc, char** argv) {
             }
             if (!cartPath.empty()) { if (!host.loadCartridgeFile(cartPath) || diag) std::printf("[cart] %s\n", host.status.c_str()); if (wantCrtc >= 0 && host.emu && host.emu->crtc) host.emu->crtc->setType(wantCrtc); run(150); }
             if (!diskPath.empty()) { host.loadDiskFile(diskPath, 0); run(150); }  // let BASIC settle
+            if (!cbuildPath.empty()) {
+                // A C program built (c_build.h) and started as from BASIC (EmuHost::startProgram);
+                // --frames, --keys and --shot then apply to it.
+                CToolchain t;
+                t.sdccFolder = cbuildSdcc;
+                t.cpcteleraFolder = cbuildCpct;
+                if (cbuildLoc >= 0) t.codeLoc = cbuildLoc;
+                t.forceAssets = cbuildForce;
+                std::error_code ec;
+                const CBuildResult res = buildC(t, cbuildPath, (std::filesystem::temp_directory_path(ec) / "cpcse-cbuild").u8string(), nullptr);
+                for (const CBuildMessage& m : res.messages)
+                    std::printf("[cbuild] %s%s%s\n", m.file.empty() ? "" : (m.file + ":" + std::to_string(m.line) + ": ").c_str(), m.text.c_str(), m.error ? "" : " (warning)");
+                if (diag) std::printf("%s", res.log.c_str());
+                if (!res.ok) { std::printf("[cbuild] FAILED\n"); return 3; }
+                std::string how;
+                host.startProgram(res.bytes, res.loadAddress, res.runAddress, how);
+                std::printf("[cbuild] %s: %d bytes at &%04X, run &%04X (%s)\n", res.project.c_str(), (int)res.bytes.size(),
+                            res.loadAddress & 0xffff, res.runAddress & 0xffff, how.c_str());
+            }
             if (!tapePath.empty() && host.loadTapeFile(tapePath)) host.tapePlay();   // PLAY down: it moves when the firmware starts the motor
             if (!recordTape.empty()) { host.tapeNewBlank(); host.tapeRecord(); }   // REC and PLAY down on a blank tape
             // The firmware has to reach its keyboard scan before a tap registers at

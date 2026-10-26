@@ -24,6 +24,7 @@ files named here.
 | libdivsufsort | as shipped with RASM | Yuta Mori | MIT | `third_party/rasm/apultra-master/src/libdivsufsort/LICENSE` |
 | LZ4 (in `lz4.h`) | as shipped with RASM | Yann Collet | BSD 2-Clause | header of `third_party/rasm/lz4.h` |
 | ZX7 (in `zx7.h`) | as shipped with RASM (modified by the RASM author) | Einar Saukas | BSD 3-Clause | header of `third_party/rasm/zx7.h` |
+| ZX0 v2.2, ZX1 v1.5 and ZX7b v1.01 compressors (in `src/gui/zx_compress.cpp`) | ported from the sources in CPCtelera's `tools/zx0`, `tools/zx1`, `tools/zx7b` | Einar Saukas; ZX7b by Antonio Villena | BSD 3-Clause | header of `src/gui/zx_compress.cpp` |
 | **Exomizer** (in `exomizer.h`) | as shipped with RASM | Magnus Lind | **non-commercial, non-profit use only** | header of `third_party/rasm/exomizer.h` |
 
 **Exomizer's licence restricts the whole assembler build to non-commercial,

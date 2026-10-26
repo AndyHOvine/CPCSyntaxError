@@ -227,6 +227,15 @@ Select the expansions in the **Expansions** menu or in the Settings window.
 - **The assembler** is [RASM](https://github.com/EdouardBERGE/rasm), included in the program.
   Press F9 to assemble into the memory of the running machine. Press Ctrl+F9 to assemble and
   run. You can change the colours of the syntax.
+- **C programs** in the same window. Open a `.c` file: F9 builds it with
+  [SDCC](https://sdcc.sourceforge.net) and, if you name a copy of
+  [CPCtelera](https://github.com/Arnaud6128/cpctelera/tree/cpctelera_next) in **C settings...**,
+  with CPCtelera's library. Ctrl+F9 builds it and runs it from BASIC, as a real CPC runs a
+  binary. You do not need Cygwin, make or bash.
+  - The project's `cfg/*.mk` asset steps run first: images, Tiled maps, Arkos Tracker 3 music,
+    packed data (zx0, zx1, zx7b) and `.bin` files. **Convert assets** runs all of them again.
+  - All 58 example projects of CPCtelera's "next" branch build and run.
+  - SDCC is not included: install it separately.
 - **The BASIC window** (next to the assembler) lists the BASIC program in the machine, edits
   it, and puts it back into memory at once, as if it had been typed. It can type RUN for you.
   Its tokenizer is checked byte for byte against Locomotive BASIC itself.
@@ -331,7 +340,7 @@ These files are next to the program. **Window → Reset layout** sets the defaul
 | Ctrl+Left | A second back (the timeline) |
 | Ctrl+1 to Ctrl+9 | Load quick save slot 1 to 9 |
 | Ctrl+Shift+1 to Ctrl+Shift+9 | Save quick save slot 1 to 9 |
-| F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window) |
+| F9, Ctrl+F9 | Assemble, assemble and run (in the assembler window); build, build and run for a `.c` file |
 | F12, middle button | Release the mouse (click the picture to give the mouse to the Symbiface or the mouse interface) |
 
 The keys go to the CPC. The exception is when a debugger or assembler window has the focus.
@@ -359,6 +368,8 @@ cpcse.exe --shot out.bmp --model cpc6128 --frames 200 [--disk game.dsk] [--type 
           [--mouse "w120;j5,60;j16,2;tDIR;kEnter;s<file.bmp>"]
 ```
 
+- `--cbuild <main.c>` builds a C project with SDCC and runs it (add `--cpctelera <folder>`,
+  `--sdcc <folder>`, `--codeloc <address>` or `--force-assets` as necessary).
 - `--type` types its text after the machine starts. `\n` is the Enter key.
 - `--disk-writeback` writes the changes from the program into the disc file. This is off in
   headless mode and on in the window.

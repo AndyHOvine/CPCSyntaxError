@@ -1577,6 +1577,47 @@ void EmuHost::reset() {
     emu->reset();
     status = "Reset";
 }
+bool EmuHost::startProgram(const std::vector<uint8_t>& bytes, int load, int run, std::string& how) {
+    if (!booted() || !emu || bytes.empty()) return false;
+    const bool firmware = currentModel >= 0 && models[(size_t)currentModel].computer;
+    if (firmware) {
+        // A clean machine at the BASIC prompt: what is left of an earlier program (the
+        // firmware switched off, its jumpblock overwritten) cannot stop MC START PROGRAM.
+        emu->reset();
+        const bool wasPaused = paused;                 // runFrame does nothing while paused (the debugger)
+        paused = false;
+        for (int i = 0; i < 170; i++) runFrame();     // a 6128 is at "Ready" after some 150 frames
+        paused = wasPaused;
+    }
+    for (size_t i = 0; i < bytes.size(); i++) emu->memory->write((load + (int)i) & 0xffff, bytes[i]);
+    Z80* cpu = emu->cpu;
+    if (firmware) {
+        // MC START PROGRAM (6128 OS &061C: DI, IM 1, the firmware set up again, SP &C000, EI)
+        // ends at &0077, which makes HL and C a far address and FAR CALLs it (RST 3). The far
+        // address's ROM byte &FF leaves the selection alone and disables both ROMs: a program
+        // in RAM. (C = 0 would select BASIC's ROM and enable it, and a program's reads of
+        // &C000-&FFFF would read BASIC: CPCtelera's cpct_clearScreen filled the screen with it.)
+        cpu->iff1 = cpu->iff2 = false;
+        cpu->sp = 0xc000;
+        cpu->h = (run >> 8) & 0xff; cpu->l = run & 0xff;
+        cpu->c = 0xff;
+        cpu->pc = 0xbd16;
+        how = "MC START PROGRAM";
+    } else {
+        // the RMR (&7Fxx, bits 7-6 = 10): bit 2 lower ROM off, bit 3 upper ROM off, mode kept
+        const int first = load & 0xffff, last = std::min(0xffff, first + (int)bytes.size() - 1);
+        int rmr = emu->gateArray->romConfig & 0x0f;
+        if (first < 0x4000) rmr |= 0x04;
+        if (last >= 0xc000) rmr |= 0x08;
+        emu->writePort(0x7f00, 0x80 | rmr);
+        cpu->pc = run & 0xffff;
+        how = "jump (no firmware)";
+    }
+    cpu->halted = false;
+    timelineEdited();
+    return true;
+}
+
 void EmuHost::timelineEdited() {
     timelineEpoch += 1;
     if (movieRec) { movieRec = false; movieStatus = "An edit stopped the movie's recording (it could not be played back)."; }

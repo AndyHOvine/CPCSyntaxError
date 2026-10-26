@@ -213,6 +213,11 @@ add_executable(cpcse
   src/gui/gui_gfx_finder.cpp
   src/gui/gui_keyboard.cpp
   src/gui/gui_assembler.cpp
+  src/gui/c_build.cpp
+  src/gui/cpct_assets.cpp
+  src/gui/cpct_img.cpp
+  src/gui/png_decode.cpp
+  src/gui/zx_compress.cpp
   src/gui/gui_basic.cpp
   src/gui/asm_highlight.cpp
   src/gui/devserver.cpp
