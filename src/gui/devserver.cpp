@@ -22,6 +22,7 @@
 #include "minijson.h"
 #include "core/debug_symbols.h"
 #include "core/emulator.h"
+#include "core/gate_array.h"
 #include "core/keyboard.h"
 #include "core/memory.h"
 #include "core/png.h"
@@ -540,7 +541,7 @@ struct DevServer::Impl {
             bool readOk = false;
             Bytes data = EmuHost::readFile(r.path, readOk);
             if (!readOk) { error = "cannot read " + r.path; return false; }
-            AmsdosInfo h = amsdosHeader(data);
+            AmsdosInfo h = r.raw ? AmsdosInfo{} : amsdosHeader(data);
             size_t from = 0, length = data.size();
             if (h.present) { from = 128; length = std::min<size_t>(h.length ? (size_t)h.length : data.size() - 128, data.size() - 128); }
             int at = r.address >= 0 ? r.address : (h.present ? h.load : -1);
@@ -568,6 +569,12 @@ struct DevServer::Impl {
                 std::snprintf(b, sizeof(b), "Loaded %s: %zu bytes at &%04X", fileName(r.path).c_str(), length, at & 0xffff);
             else {
                 dbg.setPc(pc);
+                if (r.romsOff) {
+                    // Bit 4 left clear: no interrupt counter reset rides along.
+                    e->gateArray->romConfig = (e->gateArray->romConfig | 0x0c) & ~0x10;
+                    e->memory->setGateArrayConfig(e->gateArray->romConfig & 0x1f);
+                    e->cpu->iff1 = e->cpu->iff2 = false;
+                }
                 startRunning();
                 std::snprintf(b, sizeof(b), "Loaded %s: %zu bytes at &%04X, %s at &%04X", fileName(r.path).c_str(), length,
                               at & 0xffff, gdbHolds() ? "PC" : "started", pc & 0xffff);
@@ -1569,6 +1576,22 @@ int DevServer::reloads() const { return impl->reloadCount; }
 
 int DevServer::loadSymbols(const std::string& path, std::string& error) { return impl->loadSymbols(path, error); }
 
+int DevServer::loadSymbolBreakpoints(const std::string& path) {
+    std::ifstream f(path, std::ios::binary);
+    static const std::regex brk("^\\s*(?:b|break)\\s+\\$([0-9A-Fa-f]{1,4})\\b", std::regex::icase);
+    Debugger& dbg = impl->dbg;
+    int added = 0;
+    for (std::string line; std::getline(f, line);) {
+        std::smatch m;
+        if (line.size() > 512 || !std::regex_search(line, m, brk)) continue;
+        const int a = (int)std::stol(m[1].str(), nullptr, 16);
+        if (std::any_of(dbg.breakpoints.begin(), dbg.breakpoints.end(), [&](const GuiBreakpoint& b) { return b.address == a; })) continue;
+        dbg.addBreakpoint(a);
+        added++;
+    }
+    return added;
+}
+
 
 void DevServer::loadSettings(const std::map<std::string, std::string>& ini) {
     auto num = [&](const char* k, int d) { auto i = ini.find(k); return i == ini.end() ? d : std::atoi(i->second.c_str()); };
@@ -1591,10 +1614,36 @@ void DevServer::startFromSettings() {
 // ==================================================================== command line
 int DevServer::address(const std::string& text) const { return impl->dbg.parseAddress(text); }
 
+// "-x value", "--name value" and "--name=value". True when the argument at i is
+// this option, with its value in out (or the reason in error).
+static bool readOption(int argc, char** argv, int& i, const char* shortName, const char* longName,
+                       std::string& out, std::string& error) {
+    const std::string a = argv[i], eq = std::string(longName) + "=";
+    if (a.rfind(eq, 0) == 0) { out = a.substr(eq.size()); return true; }
+    if (a != shortName && a != longName) return false;
+    if (i + 1 < argc) out = argv[++i];
+    else error = std::string(shortName) + " needs a value";
+    return true;
+}
+
+std::map<std::string, std::string> commandLineOverrides(int argc, char** argv) {
+    std::map<std::string, std::string> out;
+    std::string v, error;
+    for (int i = 1; i < argc; i++) {
+        if (!readOption(argc, argv, i, "-O", "--override", v, error)) continue;
+        const size_t eq = v.find('=');
+        if (eq != std::string::npos && eq > 0) out[lower(v.substr(0, eq))] = v.substr(eq + 1);
+    }
+    return out;
+}
+
 bool applyDevArguments(DevServer& dev, int argc, char** argv, std::string& error) {
     LoadRequest load, watch;
     bool haveLoad = false, haveWatch = false, reset = false;
     std::string run, command, symbols;
+    // -i: a binary put into memory once the firmware has started, and started there.
+    std::string inject, injectAt, ignored;
+    bool symbolBreakpoints = false;
     // file@addr; a Windows path keeps its colon, and an '@' that is part of a name stays.
     auto split = [](const std::string& arg, LoadRequest& r, std::string& addrText) {
         r.path = arg;
@@ -1653,10 +1702,18 @@ bool applyDevArguments(DevServer& dev, int argc, char** argv, std::string& error
             }
         } else if (a == "--symbols") {
             if (!value("--symbols", symbols)) return false;
+        } else if (readOption(argc, argv, i, "-i", "--inject", inject, error)
+                || readOption(argc, argv, i, "-o", "--offset", injectAt, error)
+                || readOption(argc, argv, i, "-O", "--override", ignored, error)) {   // commandLineOverrides() reads these
+            if (!error.empty()) return false;
+        } else if (readOption(argc, argv, i, "-s", "--sym_file", symbols, error)) {
+            if (!error.empty()) return false;
+            symbolBreakpoints = true;   // the file's "break" lines too
         }
     }
     // The symbols first: --run and file@addr may name a label.
     if (!symbols.empty() && dev.loadSymbols(symbols, error) < 0) { error = "--symbols: " + error; return false; }
+    if (symbolBreakpoints) dev.loadSymbolBreakpoints(symbols);
     auto finish = [&](LoadRequest& r, const std::string& addrText, const char* flag) {
         if (!addrText.empty()) {
             r.address = dev.address(addrText);
@@ -1676,6 +1733,19 @@ bool applyDevArguments(DevServer& dev, int argc, char** argv, std::string& error
         return true;
     };
     if (haveLoad) { if (!finish(load, loadAt, "--load")) return false; load.symbols.clear(); dev.loadWhenReady(load); }
+    if (!inject.empty()) {
+        // The file's bytes as they are, at -o (&6000 without one), and
+        // the program started where it went -- with the ROMs off and interrupts disabled,
+        // as a disc loader would leave it.
+        LoadRequest r;
+        r.path = inject;
+        r.raw = true;
+        r.address = injectAt.empty() ? 0x6000 : dev.address(injectAt);
+        if (r.address < 0) { error = "-o: '" + injectAt + "' is not an address or a label"; return false; }
+        r.run = r.address;
+        r.romsOff = true;
+        dev.loadWhenReady(r);
+    }
     if (haveWatch) { if (!finish(watch, watchAt, "--watch")) return false; dev.watch(watch); }
     return true;
 }

@@ -349,7 +349,9 @@ The keys go to the CPC. The exception is when a debugger or assembler window has
 
 `cpcse.exe --roms <folder>` starts the emulator with another ROM folder.
 [External debugging](#external-debugging) shows the options `--gdb`, `--api`, `--load`,
-`--watch`, `--run`, `--reset`, `--command` and `--symbols`.
+`--watch`, `--run`, `--reset`, `--command` and `--symbols`. It also takes the `-i`, `-o`, `-s`
+and `-O` options TRSE passes, so TRSE can run CPC programs in it
+([docs/external-debugging.md](docs/external-debugging.md#trse)).
 
 A headless screenshot mode is available for scripts:
 

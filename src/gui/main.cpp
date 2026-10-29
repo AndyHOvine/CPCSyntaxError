@@ -821,13 +821,25 @@ int main(int argc, char** argv) {
     // first machine there are ROMs for.
     std::string savedModel = gets("model", "");
     int savedRam = geti("ram", -1), savedCrtc = geti("crtc", -1);
+    // -O system.model=N, as TRSE passes it: this session's machine, not the
+    // settings' (commandLineModel keeps them from being saved over).
+    int commandLineModel = -1;
     if (geti("autoboot", 1)) {
         int pick = -1;
         auto find = [&](const std::string& id) {
             for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == id && host.models[i].available) return i;
             return -1;
         };
-        if (!savedModel.empty()) pick = find(savedModel);
+        const std::map<std::string, std::string> overrides = commandLineOverrides(argc, argv);
+        if (auto o = overrides.find("system.model"); o != overrides.end()) {
+            static const char* const modelByNumber[] = { "cpc464", "cpc664", "cpc6128", "cpc6128plus" };
+            const int n = std::atoi(o->second.c_str());
+            if (n >= 0 && n < 4 && (pick = find(modelByNumber[n])) >= 0) {
+                commandLineModel = pick;
+                if (modelByNumber[n] != savedModel) { savedRam = -1; savedCrtc = -1; }   // that machine's own
+            }
+        }
+        if (pick < 0 && !savedModel.empty()) pick = find(savedModel);
         if (pick < 0) { savedRam = -1; savedCrtc = -1; pick = find("cpc6128"); }
         for (int i = 0; pick < 0 && i < (int)host.models.size(); i++) if (host.models[i].available) pick = i;
         // a RAM size or CRTC from the settings that cannot be fitted: the model's own instead
@@ -1068,9 +1080,16 @@ int main(int argc, char** argv) {
         {
             f << "# CPCSyntaxError settings\n";
             f << "romdir=" << host.romDir << "\n";
-            f << "model=" << defModel << "\n";
-            f << "ram=" << host.ramKiB << "\n";
-            f << "crtc=" << host.crtcType << "\n";
+            if (commandLineModel >= 0 && host.currentModel == commandLineModel) {
+                // still the command line's machine: the settings keep the one they had
+                f << "model=" << gets("model", "") << "\n";
+                f << "ram=" << gets("ram", std::to_string(host.ramKiB).c_str()) << "\n";
+                f << "crtc=" << gets("crtc", std::to_string(host.crtcType).c_str()) << "\n";
+            } else {
+                f << "model=" << defModel << "\n";
+                f << "ram=" << host.ramKiB << "\n";
+                f << "crtc=" << host.crtcType << "\n";
+            }
             f << "autoboot=1\n";
             f << "monitor=" << host.monitorMode << "\n";
             f << "monitorset=" << host.monitorSetId << "\n";
