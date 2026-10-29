@@ -809,6 +809,7 @@ int main(int argc, char** argv) {
     host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
     host.crtMaskSize    = std::clamp(geti("crtmasksize", 1), 1, 4);
     host.crtMaskTurned  = geti("crtmaskturned", 0) != 0;
+    host.crtFilter.load(ini);
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
@@ -937,6 +938,20 @@ int main(int argc, char** argv) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
         }
         return t.id;
+    };
+
+    // The advanced CRT filter, on the GPU. A context that cannot run it says so once, and the
+    // plain picture is drawn.
+    CrtFilterRenderer crtFilter;
+    bool crtFilterFailed = false;
+    shell.crtFilterRender = [&](int outW, int outH, float pixelScale, bool newFrame) -> unsigned {
+        if (crtFilterFailed) return 0;
+        if (!crtFilter.init(glslVersion)) {
+            crtFilterFailed = true;
+            host.status = "The advanced CRT filter cannot run here: " + crtFilter.error;
+            return 0;
+        }
+        return crtFilter.render(screenTex, TEX_W, TEX_H, 2, outW, outH, pixelScale, newFrame, host.crtFilter);
     };
 
     const double FRAME_SECONDS = 1.0 / 50.08;
@@ -1164,6 +1179,7 @@ int main(int argc, char** argv) {
             f << "crtmask=" << host.crtMask << "\n";
             f << "crtmasksize=" << host.crtMaskSize << "\n";
             f << "crtmaskturned=" << (host.crtMaskTurned ? 1 : 0) << "\n";
+            host.crtFilter.save(f);
             f << "aspect=" << (host.maintainAspect ? 1 : 0) << "\n";
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";

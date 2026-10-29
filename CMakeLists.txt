@@ -200,6 +200,7 @@ endif()
 add_executable(cpcse
   src/gui/main.cpp
   src/gui/emuhost.cpp
+  src/gui/crt_filter.cpp
   src/gui/gui_shell.cpp
   src/gui/gui_panels.cpp
   src/gui/gui_widgets.cpp

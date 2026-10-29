@@ -77,6 +77,11 @@ public:
     // effect's bloom); ImDrawCallback_ResetRenderState puts the usual blending back. Null:
     // the bloom blends as other draws do.
     ImDrawCallback additiveBlend = nullptr;
+    // Set by main (it owns GL): the emulated screen through the advanced CRT filter, into a
+    // texture of outW x outH pixels; newFrame moves its rolling lines on. 0: not drawn
+    // (the plain picture is drawn instead).
+    std::function<unsigned(int outW, int outH, float pixelScale, bool newFrame)> crtFilterRender;
+    uint64_t crtFilterFrame = ~0ull;   // the emulated frame the filter last drew
     // ...and one after which draws MULTIPLY what is under them (the CRT effect's slot mask).
 
     bool quitRequested = false;
@@ -175,6 +180,7 @@ private:
 
     // settings sections and tool windows (gui_panels.cpp)
     void sectionVideo(bool asMenu);
+    void crtFilterItems(bool asMenu);   // the advanced CRT filter's settings, in Video
     void sectionAudio(bool asMenu);
     void sectionInput(bool asMenu);
     void joystickDeviceItems(int port, bool asMenu);

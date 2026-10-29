@@ -54,6 +54,13 @@ It runs on Windows, Linux and macOS. It has a cycle-level model of the chips of 
   its strength and size, and turn the mask 90 degrees. The **soft slot mask** keeps each
   pixel's colour whole under fine dark lines, as ACE-DL draws a CTM. A bloom adds a glow. A
   blur softens the edges of the pixels, as the round spot of the beam does.
+- **The Advanced CRT Filter** (**Video → Advanced CRT Filter**) draws the picture on the
+  graphics card in two stages, each of which you can turn off. The signal stage decodes it as
+  a PAL signal: the colour spreads over the pixels round it and alternate lines' colour
+  shifts, then the scanlines, brightness, contrast and gamma. The screen stage is the tube's
+  glass: a bulge, rounded corners, bleed and glow, dark lines every few screen lines, a
+  phosphor mask (stripes, slots or dots), a tint and an optional rolling bar. While it is on,
+  the CRT effect above is not drawn.
 - **The Z80** passes ZEXDOC, ZEXALL and all the tests of z80test 1.2a by Patrik Rak. This
   includes the undocumented flags, MEMPTR, SCF/CCF on a Zilog chip and interrupted block
   instructions.
