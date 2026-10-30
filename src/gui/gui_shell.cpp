@@ -384,7 +384,22 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
             } else {
                 drawGfxMonitor(dl, gx, gy, gw, gh);
             }
-        } else {
+        }
+        // The advanced CRT filter: the picture drawn by the GPU at the size it is shown, one
+        // texel a screen pixel (so on whole pixels).
+        bool filtered = false;
+        if (!gfxOnMain && host.crtFilterActive() && crtFilterRender) {
+            const ImVec2 fbScale = ImGui::GetIO().DisplayFramebufferScale;
+            const int outW = (int)std::lround(drawW * fbScale.x), outH = (int)std::lround(drawH * fbScale.y);
+            const bool newFrame = crtFilterFrame != host.framesRun;
+            if (const unsigned t = crtFilterRender(outW, outH, fbScale.y, newFrame)) {
+                crtFilterFrame = host.framesRun;
+                ox = std::round(ox); oy = std::round(oy);
+                dl->AddImage((ImTextureID)(intptr_t)t, ImVec2(ox, oy), ImVec2(ox + drawW, oy + drawH));
+                filtered = true;
+            }
+        }
+        if (!gfxOnMain && !filtered) {
             // CRT effect, blur: the picture softened, for the plain picture, the slot mask and the bloom
             if (host.crtEffect && host.crtBlur > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
                 if (!blurTexture || blurFrame != host.framesRun || blurAmount != host.crtBlur) {
@@ -400,7 +415,7 @@ void GuiShell::windowScreen(const ShellFrameInfo& info) {
         // CRT effect: the tube's pattern -- a slot mask on a colour tube, scanlines (dark lines
         // every 2 source rows) on a green or grey one, or as chosen -- and a faint bloom.
         // Cheap, and off unless turned on.
-        if (host.crtEffect && !gfxOnMain) {
+        if (host.crtEffect && !gfxOnMain && !filtered) {
             const bool softMask = host.crtPattern == "soft";
             if ((host.crtSlotMask() || softMask) && host.crtMask > 0.001f && uploadTexture && host.video && !host.video->pixels.empty()) {
                 // the picture through the slot mask, each phosphor slot lit whole, at the

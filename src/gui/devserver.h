@@ -51,6 +51,10 @@ struct LoadRequest {
     bool reset = false;
     std::string command;     // typed once it is in, "\n" for Enter: RUN"GAME\n
     std::string symbols;     // a symbol file to load with it (RASM, sjasmplus, pasmo, ...)
+    bool raw = false;        // .bin: every byte goes in, AMSDOS header or not (-i)
+    // .bin with a run: start it with both ROMs off and interrupts disabled, as a disc
+    // loader would leave it (-i).
+    bool romsOff = false;
 };
 
 class DevServer {
@@ -83,6 +87,9 @@ public:
     int reloads() const;
     // A symbol file into the debugger's labels; how many were read, -1 on failure.
     int loadSymbols(const std::string& path, std::string& error);
+    // A VICE-format symbol file's "break $4010" (or "b $4010") lines, as TRSE writes them
+    // for its breakpoints, into the debugger; how many were new.
+    int loadSymbolBreakpoints(const std::string& path);
     // "&4000", "0x4000", "16384" or a label, as the debugger reads them; -1 if none.
     int address(const std::string& text) const;
 
@@ -107,8 +114,14 @@ private:
 
 // The command-line options main() hands over: --gdb[=port] --api[=port]
 // --load file[@addr] --watch file[@addr] --run entry|addr --reset --command text
-// --symbols file (addresses may be labels from the symbols). Returns false (with a
-// message) for a malformed one; unrelated arguments are skipped.
+// --symbols file (addresses may be labels from the symbols). Also the ones TRSE
+// passes: -i/--inject file, -o/--offset addr and -s/--sym_file file (-O is read by
+// commandLineOverrides). Returns false (with a message) for a malformed one; unrelated
+// arguments are skipped.
 bool applyDevArguments(DevServer& dev, int argc, char** argv, std::string& error);
+
+// The -O/--override section.item=value options on the command line, by
+// "section.item" (the last one given wins).
+std::map<std::string, std::string> commandLineOverrides(int argc, char** argv);
 
 } // namespace cpcse

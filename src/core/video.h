@@ -86,6 +86,9 @@ public:
     // ...and whether it is the colour tube, asked for every pixel drawn: a colour tube
     // passes the RGB through untouched. Kept by setMonitorMode, the one writer.
     bool monitorColourTube = true;
+    // The colour spread over neighbouring pixels (applyChromaBandwidth). The host turns it
+    // off while its advanced CRT filter does its own.
+    bool chromaSpread = true;
     // The set's controls (monitor_palette.h): front Brightness and Contrast, and the service
     // Drive and Bias of each gun. Contrast acts only on a set that has the control
     // (MonitorModel::hasContrast).

@@ -16,6 +16,7 @@
 #include <cstdint>
 #include "core/common.h"
 #include "core/cheats.h"
+#include "crt_filter.h"
 #include "core/timeline.h"
 #include "joypads.h"
 #include <deque>
@@ -187,6 +188,10 @@ public:
     bool crtMaskTurned = false;          // the mask turned 90 degrees: stripes across
     bool crtSlotMask() const;
     bool crtScanlines() const;
+    // The advanced CRT filter (crt_filter.h), drawn by the GPU. While it is on, the CRT effect
+    // above stands aside.
+    CrtFilterSettings crtFilter;
+    bool crtFilterActive() const { return crtFilter.enabled && (crtFilter.signal || crtFilter.screen); }
 
     // media state (for display)
     std::string diskName[2];

@@ -175,7 +175,8 @@ void GuiShell::sectionVideo(bool asMenu) {
 
     if (asMenu) ImGui::Separator(); else sectionHeading("CRT effect");
     ImGui::Checkbox("CRT effect", &host.crtEffect);
-    ImGui::BeginDisabled(!host.crtEffect);
+    if (host.crtFilterActive()) ImGui::TextDisabled("(the advanced CRT filter is drawn instead)");
+    ImGui::BeginDisabled(!host.crtEffect || host.crtFilterActive());
     static const Choice patterns[] = {
         { "As the set", "auto", "A colour set (CTM 640/644, CM14) has a slot mask;\na green or grey set (GT 64/65, MM12) shows scanlines." },
         { "Slot mask", "slot", "The phosphor stripes and slots of a colour tube" },
@@ -194,6 +195,18 @@ void GuiShell::sectionVideo(bool asMenu) {
     ImGui::SetNextItemWidth(itemWidth(asMenu)); ImGui::SliderFloat("##blur", &host.crtBlur, 0.0f, 1.0f, "blur %.2f");
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The beam's spot is round and soft: the pixels' edges soften, as on a tube.\n0 = sharp.");
     ImGui::EndDisabled();
+
+    if (asMenu) ImGui::Separator(); else sectionHeading("Advanced CRT Filter");
+    ImGui::Checkbox("Advanced CRT Filter", &host.crtFilter.enabled);
+    if (ImGui::IsItemHovered())
+        ImGui::SetTooltip("The picture as a PAL signal on a curved tube: its colour spread and scanlines,\n"
+                          "then the glass, the phosphor mask, bleed and glow. Drawn by the graphics card.");
+    if (asMenu) {
+        if (ImGui::BeginMenu("Advanced CRT Filter settings")) { crtFilterItems(true); ImGui::EndMenu(); }
+    } else if (ImGui::TreeNode("Settings##crtfilter")) {
+        crtFilterItems(false);
+        ImGui::TreePop();
+    }
 
     if (asMenu) ImGui::Separator(); else sectionHeading("GFX9000 monitor");
     static const Choice gfxPlace[] = {
@@ -221,6 +234,52 @@ void GuiShell::sectionVideo(bool asMenu) {
             if (host.gfx9000Monitor == "window") panelOpen("GFX9000") = true;
         });
     }
+    ImGui::EndDisabled();
+}
+
+void GuiShell::crtFilterItems(bool asMenu) {
+    CrtFilterSettings& f = host.crtFilter;
+    ImGui::BeginDisabled(!f.enabled);
+    auto slider = [&](const CrtFilterSlider& s) {
+        std::string format;
+        for (const char* c = s.label; *c; c++) format += *c == '%' ? "%%" : std::string(1, *c);
+        format += " %d";
+        ImGui::SetNextItemWidth(itemWidth(asMenu));
+        ImGui::SliderInt((std::string("##crtfilter.") + s.key).c_str(), &(f.*s.field), s.min, s.max, format.c_str(),
+                         ImGuiSliderFlags_AlwaysClamp);
+    };
+    auto stage = [&](bool signal) {
+        for (int i = 0; i < CRT_FILTER_SLIDER_COUNT; i++) {
+            const CrtFilterSlider& s = CRT_FILTER_SLIDERS[i];
+            if (s.signal != signal) continue;
+            if (std::string(s.key) == "tint") {
+                float rgb[3] = { ((f.tintColour >> 16) & 0xff) / 255.0f, ((f.tintColour >> 8) & 0xff) / 255.0f, (f.tintColour & 0xff) / 255.0f };
+                if (ImGui::ColorEdit3("Tint colour##crtfilter", rgb, ImGuiColorEditFlags_NoInputs))
+                    f.tintColour = (uint32_t)std::lround(rgb[0] * 255) << 16 | (uint32_t)std::lround(rgb[1] * 255) << 8 | (uint32_t)std::lround(rgb[2] * 255);
+            }
+            slider(s);
+            if (std::string(s.key) == "darkness") {
+                ImGui::SetNextItemWidth(itemWidth(asMenu));
+                int dir = f.columns ? 1 : 0;
+                if (ImGui::Combo("##crtfilter.direction", &dir, "Lines in rows\0Lines in columns\0")) f.columns = dir == 1;
+            }
+            if (std::string(s.key) == "mask") {
+                ImGui::SetNextItemWidth(itemWidth(asMenu));
+                ImGui::Combo("##crtfilter.maskshape", &f.maskShape, CRT_FILTER_MASK_SHAPES, 4);
+            }
+        }
+    };
+    ImGui::Checkbox("Signal: PAL colour and scanlines", &f.signal);
+    ImGui::BeginDisabled(!f.signal);
+    stage(true);
+    ImGui::EndDisabled();
+    if (asMenu) ImGui::Separator();
+    ImGui::Checkbox("Screen: glass, mask and glow", &f.screen);
+    ImGui::BeginDisabled(!f.screen);
+    stage(false);
+    ImGui::EndDisabled();
+    if (asMenu) ImGui::Separator();
+    if (ImGui::Button("Defaults##crtfilter")) { const bool on = f.enabled; f = CrtFilterSettings(); f.enabled = on; }
     ImGui::EndDisabled();
 }
 

@@ -996,7 +996,7 @@ void CpcVideo::render() {
     lineClipRight = std::nullopt; lineOrigin = std::nullopt; linePhysicalY = std::nullopt;
     lineHalfLine = 0;
     renderSprites(frameScroll);
-    if (monitorColourTube) applyChromaBandwidth();
+    if (monitorColourTube && chromaSpread) applyChromaBandwidth();
     for (const auto& m : deferredIoMarks) { setPixel(m[0], m[1], m[2], m[3]); setPixel(m[0], m[1] + 1, m[2], m[3]); }
     deferredIoMarks.clear();
 }

@@ -143,13 +143,28 @@ std::vector<RemuSymbol> parseSymbolText(const std::string& text, const ParseSymb
         symbols.push_back(s);
     };
     const std::string& input = text;
+    std::vector<std::string> lines; { std::string cur; for (char c : input) { if (c == '\n') { std::string l = cur; if (!l.empty() && l.back() == '\r') l.pop_back(); lines.push_back(l); cur.clear(); } else cur += c; } lines.push_back(cur); }
+    // VICE's monitor labels, as TRSE writes them: "al $4000 .name" (or "al
+    // C:4000 .name"). Looked for first: a TRSE program's label called "label" or "brk"
+    // would otherwise send the file to the Remu reader, and the lines after them --
+    // "break $4010", "d $4100" -- are not symbols for the readers below.
+    {
+        static const std::regex vice("^\\s*al\\s+(?:C:|\\$)([0-9A-Fa-f]{1,4})\\s+\\.?([A-Za-z_.$@?][\\w.$@?]*)", std::regex::icase);
+        bool any = false;
+        for (const std::string& line : lines) {
+            std::smatch m;
+            if (line.size() > MAX_SYMBOL_LINE || !std::regex_search(line, m, vice)) continue;
+            add(m[2].str(), (int)std::stol(m[1].str(), nullptr, 16), std::nullopt, "logical");
+            any = true;
+        }
+        if (any) return symbols;
+    }
     if (std::regex_search(input, std::regex("\\b(?:label|romlabel|alias|comz|romcomz|brk|rombrk|acebreak)\\b", std::regex::icase)) && input.find(';') != std::string::npos) {
         RemuData r = parseRemu(input);
         std::vector<RemuSymbol> out;
         for (RemuSymbol s : r.symbols) { s.source = options.source; s.fileName = options.fileName; out.push_back(s); }
         return out;
     }
-    std::vector<std::string> lines; { std::string cur; for (char c : input) { if (c == '\n') { std::string l = cur; if (!l.empty() && l.back() == '\r') l.pop_back(); lines.push_back(l); cur.clear(); } else cur += c; } lines.push_back(cur); }
     for (const std::string& original : lines) {
         if (original.size() > MAX_SYMBOL_LINE) continue;
         std::string line = std::regex_replace(original, std::regex(";.*"), "");

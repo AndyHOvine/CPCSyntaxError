@@ -35,7 +35,7 @@ cpcse --symbols build/game.sym --load build/game.bin --run main
 | `--run entry` or `--run addr` | After a `.bin` loads, start it. `entry` is the header's entry address. If the file has no header, or you gave `@addr`, `entry` means where it was loaded. Otherwise the program starts at `addr`. Without `--run`, the bytes go into memory and the PC is left alone. |
 | `--reset` | Reset the machine before each load. For a `.bin`, the bytes are written once the firmware has started, so its start-up can't overwrite them. |
 | `--command text` | Typed on the keyboard after loading; `\n` is Enter. For example `RUN"GAME\n` for a disc. |
-| `--symbols file` | Labels for the debugger, for `--run` and for `file@label`. RASM, sjasmplus (`--sym`), pasmo, WinAPE or `name EQU value` files. With `--watch`, the file is read again after every build. |
+| `--symbols file` | Labels for the debugger, for `--run` and for `file@label`. RASM, sjasmplus (`--sym`), pasmo, WinAPE, VICE/TRSE (`al $4000 .name`) or `name EQU value` files. With `--watch`, the file is read again after every build. |
 
 Addresses can be written `&4000`, `#4000`, `$4000`, `0x4000`, `4000h` or `16384`, or as a label from the symbols. In a Windows command prompt, `&` has to be quoted, so `0x4000` is the easiest form there.
 
@@ -196,6 +196,23 @@ What a reload does:
 - **A `.dsk`** is inserted again, and the command (for example `RUN"GAME\n`) is typed again. Use reset (`--reset`, `reset=1`, *Reset first*) so it's typed at a BASIC prompt rather than into the program that's still running.
 - **Partly written files:** a file is reloaded only once it has stopped changing for a moment, so a build that is still writing it isn't loaded half-done.
 - **Where to see it:** the status line and *Settings → External debugging* show the last reload and how many there have been.
+
+## TRSE
+
+[TRSE](https://lemonspawn.com/turbo-rascal-syntax-error-expected-but-begin/) runs an Amstrad CPC program by starting an emulator with options that put the program straight into memory. CPCSyntaxError understands those options:
+
+1. In TRSE, open *Tools → TRSE Settings*.
+2. Set the Amstrad CPC emulator to `cpcse.exe`.
+3. Build and run.
+
+| Option | Meaning |
+|---|---|
+| `-i file`, `--inject file` | Once the firmware has started (2 seconds in), write the file's bytes into memory and start the program at the first one, with both ROMs off and interrupts disabled, as a disc loader leaves it. The whole file goes in as it is. Unlike `--load`, an AMSDOS header isn't recognised or removed. Nothing is put on the stack, so a program that ends with `RET` doesn't go back to BASIC. |
+| `-o addr`, `--offset addr` | Where `-i` puts the file. Without it, the file goes at `&6000`. |
+| `-s file`, `--sym_file file` | Symbols, as `--symbols`. The file's `break $xxxx` lines (TRSE writes them for its breakpoints) become breakpoints in the **Debugger**. |
+| `-O system.model=N` | The machine for this session: 0 = CPC 464, 1 = CPC 664, 2 = CPC 6128, 3 = 6128 Plus. TRSE passes this from the project settings' *Amstrad CPC model*. Your saved choice of machine isn't changed. |
+
+Other `-O` options are ignored. So is any other argument that isn't an option here, such as the `0` TRSE passes when a project's options are empty.
 
 ## Plain gdb
 

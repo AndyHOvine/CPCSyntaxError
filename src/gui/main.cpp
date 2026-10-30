@@ -86,6 +86,33 @@ std::string homeDir() {
 
 std::string iniFilePath() { return homeDir() + "cpcse.ini"; }
 
+// The window where it was last time (x, y: its picture's top-left; `placed` false: centred),
+// kept whole -- title bar and frame too -- inside the usable part of a display, the part no
+// taskbar covers, wherever the taskbar is. A display that has gone, or one too small for
+// the old size now, gets the window centred, or shrunk to fit.
+void placeWindow(SDL_Window* window, bool placed, int x, int y, int w, int h) {
+    int display = -1;
+    for (int d = 0; placed && d < SDL_GetNumVideoDisplays(); d++) {
+        SDL_Rect b;
+        const SDL_Point centre{ x + w / 2, y + h / 2 };
+        if (SDL_GetDisplayBounds(d, &b) == 0 && SDL_PointInRect(&centre, &b)) { display = d; break; }
+    }
+    if (display < 0) { placed = false; display = std::max(0, SDL_GetWindowDisplayIndex(window)); }
+    SDL_Rect usable;
+    if (SDL_GetDisplayUsableBounds(display, &usable) != 0) return;
+    int top = 0, left = 0, bottom = 0, right = 0;
+    if (SDL_GetWindowBordersSize(window, &top, &left, &bottom, &right) != 0) { top = 32; left = right = bottom = 8; }   // not known: a usual frame
+    const int roomW = usable.w - left - right, roomH = usable.h - top - bottom;
+    w = std::max(320, std::min(w, roomW));
+    h = std::max(240, std::min(h, roomH));
+    const int minX = usable.x + left, minY = usable.y + top;
+    if (!placed) { x = minX + (roomW - w) / 2; y = minY + (roomH - h) / 2; }
+    x = std::max(minX, std::min(x, minX + roomW - w));
+    y = std::max(minY, std::min(y, minY + roomH - h));
+    SDL_SetWindowSize(window, w, h);
+    SDL_SetWindowPosition(window, x, y);
+}
+
 // The drive's and the keyboard's recordings (core/machine_sounds.h), beside the program.
 // Beside the program first, then the working directory (a build directory, or a Linux
 // install whose binary sits elsewhere), then ../share/cpcsyntaxerror beside the binary.
@@ -686,11 +713,19 @@ int main(int argc, char** argv) {
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 0);
 
+    // Made hidden, put where it was, then shown: it never appears in the wrong place first.
     SDL_Window* window = SDL_CreateWindow(
         "CPCSyntaxError " CPCSE_VERSION, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
-        winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI
-                    | (std::getenv("CPCSE_HIDDEN_WINDOW") ? SDL_WINDOW_HIDDEN : 0));   // for tests: no window shown
+        winW, winH, SDL_WINDOW_OPENGL | SDL_WINDOW_RESIZABLE | SDL_WINDOW_ALLOW_HIGHDPI | SDL_WINDOW_HIDDEN);
     if (!window) { SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, "CPCSyntaxError", SDL_GetError(), nullptr); SDL_Quit(); return 1; }
+    placeWindow(window, ini.count("winx") && ini.count("winy"), geti("winx", 0), geti("winy", 0), winW, winH);
+    // Its place and size when not maximized, minimized or full screen: what is saved, and
+    // what a maximized window goes back to.
+    int normalX = 0, normalY = 0, normalW = winW, normalH = winH;
+    SDL_GetWindowPosition(window, &normalX, &normalY);
+    SDL_GetWindowSize(window, &normalW, &normalH);
+    if (geti("winmax", 0)) SDL_MaximizeWindow(window);
+    if (!std::getenv("CPCSE_HIDDEN_WINDOW")) SDL_ShowWindow(window);   // for tests: no window shown
     SDL_EventState(SDL_DROPFILE, SDL_ENABLE);
 
     SDL_GLContext gl = SDL_GL_CreateContext(window);
@@ -774,6 +809,7 @@ int main(int argc, char** argv) {
     host.crtMask        = level("crtmask", 0.5, 0.0, 1.0);
     host.crtMaskSize    = std::clamp(geti("crtmasksize", 1), 1, 4);
     host.crtMaskTurned  = geti("crtmaskturned", 0) != 0;
+    host.crtFilter.load(ini);
     host.m4Folder       = gets("m4folder", "");
     host.m4Enabled      = geti("m4", 0) != 0;             // applied by applySettings during boot
     host.m4Network      = geti("m4net", 1) != 0;
@@ -821,13 +857,25 @@ int main(int argc, char** argv) {
     // first machine there are ROMs for.
     std::string savedModel = gets("model", "");
     int savedRam = geti("ram", -1), savedCrtc = geti("crtc", -1);
+    // -O system.model=N, as TRSE passes it: this session's machine, not the
+    // settings' (commandLineModel keeps them from being saved over).
+    int commandLineModel = -1;
     if (geti("autoboot", 1)) {
         int pick = -1;
         auto find = [&](const std::string& id) {
             for (int i = 0; i < (int)host.models.size(); i++) if (host.models[i].id == id && host.models[i].available) return i;
             return -1;
         };
-        if (!savedModel.empty()) pick = find(savedModel);
+        const std::map<std::string, std::string> overrides = commandLineOverrides(argc, argv);
+        if (auto o = overrides.find("system.model"); o != overrides.end()) {
+            static const char* const modelByNumber[] = { "cpc464", "cpc664", "cpc6128", "cpc6128plus" };
+            const int n = std::atoi(o->second.c_str());
+            if (n >= 0 && n < 4 && (pick = find(modelByNumber[n])) >= 0) {
+                commandLineModel = pick;
+                if (modelByNumber[n] != savedModel) { savedRam = -1; savedCrtc = -1; }   // that machine's own
+            }
+        }
+        if (pick < 0 && !savedModel.empty()) pick = find(savedModel);
         if (pick < 0) { savedRam = -1; savedCrtc = -1; pick = find("cpc6128"); }
         for (int i = 0; pick < 0 && i < (int)host.models.size(); i++) if (host.models[i].available) pick = i;
         // a RAM size or CRTC from the settings that cannot be fitted: the model's own instead
@@ -890,6 +938,20 @@ int main(int argc, char** argv) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, w, h, GL_RGBA, GL_UNSIGNED_BYTE, rgba);
         }
         return t.id;
+    };
+
+    // The advanced CRT filter, on the GPU. A context that cannot run it says so once, and the
+    // plain picture is drawn.
+    CrtFilterRenderer crtFilter;
+    bool crtFilterFailed = false;
+    shell.crtFilterRender = [&](int outW, int outH, float pixelScale, bool newFrame) -> unsigned {
+        if (crtFilterFailed) return 0;
+        if (!crtFilter.init(glslVersion)) {
+            crtFilterFailed = true;
+            host.status = "The advanced CRT filter cannot run here: " + crtFilter.error;
+            return 0;
+        }
+        return crtFilter.render(screenTex, TEX_W, TEX_H, 2, outW, outH, pixelScale, newFrame, host.crtFilter);
     };
 
     const double FRAME_SECONDS = 1.0 / 50.08;
@@ -1018,6 +1080,13 @@ int main(int argc, char** argv) {
             glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, TEX_W, TEX_H, GL_RGBA, GL_UNSIGNED_BYTE, host.video->pixels.data());
         }
 
+        // Looked at here, once the events are all in: Windows reports a maximize's move
+        // before the window counts as maximized.
+        if (!(SDL_GetWindowFlags(window) & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_MINIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_FULLSCREEN_DESKTOP))) {
+            SDL_GetWindowPosition(window, &normalX, &normalY);
+            SDL_GetWindowSize(window, &normalW, &normalH);
+        }
+
         // ---- UI ----
         ImGui_ImplOpenGL3_NewFrame();
         ImGui_ImplSDL2_NewFrame();
@@ -1059,8 +1128,7 @@ int main(int argc, char** argv) {
 
     // Persist settings.
     {
-        int cw = winW, ch = winH;
-        SDL_GetWindowSize(window, &cw, &ch);
+        const bool maximized = (SDL_GetWindowFlags(window) & SDL_WINDOW_MAXIMIZED) != 0;
         std::string defModel = host.currentModel >= 0 ? host.models[host.currentModel].id : savedModel;
         // Gathered first and written whole (writeFileSafely): a full disc must not leave
         // half a settings file behind.
@@ -1068,9 +1136,16 @@ int main(int argc, char** argv) {
         {
             f << "# CPCSyntaxError settings\n";
             f << "romdir=" << host.romDir << "\n";
-            f << "model=" << defModel << "\n";
-            f << "ram=" << host.ramKiB << "\n";
-            f << "crtc=" << host.crtcType << "\n";
+            if (commandLineModel >= 0 && host.currentModel == commandLineModel) {
+                // still the command line's machine: the settings keep the one they had
+                f << "model=" << gets("model", "") << "\n";
+                f << "ram=" << gets("ram", std::to_string(host.ramKiB).c_str()) << "\n";
+                f << "crtc=" << gets("crtc", std::to_string(host.crtcType).c_str()) << "\n";
+            } else {
+                f << "model=" << defModel << "\n";
+                f << "ram=" << host.ramKiB << "\n";
+                f << "crtc=" << host.crtcType << "\n";
+            }
             f << "autoboot=1\n";
             f << "monitor=" << host.monitorMode << "\n";
             f << "monitorset=" << host.monitorSetId << "\n";
@@ -1104,6 +1179,7 @@ int main(int argc, char** argv) {
             f << "crtmask=" << host.crtMask << "\n";
             f << "crtmasksize=" << host.crtMaskSize << "\n";
             f << "crtmaskturned=" << (host.crtMaskTurned ? 1 : 0) << "\n";
+            host.crtFilter.save(f);
             f << "aspect=" << (host.maintainAspect ? 1 : 0) << "\n";
             f << "m4=" << (host.m4Enabled ? 1 : 0) << "\n";
             f << "m4folder=" << host.m4Folder << "\n";
@@ -1139,8 +1215,11 @@ int main(int argc, char** argv) {
             f << "recordformat=" << host.recordFormat << "\n";
             for (size_t i = 0; i < host.recentFiles.size(); i++) f << "recent." << i << "=" << host.recentFiles[i] << "\n";
             shell.saveSettings(f);
-            f << "winw=" << cw << "\n";
-            f << "winh=" << ch << "\n";
+            f << "winx=" << normalX << "\n";
+            f << "winy=" << normalY << "\n";
+            f << "winw=" << normalW << "\n";
+            f << "winh=" << normalH << "\n";
+            f << "winmax=" << (maximized ? 1 : 0) << "\n";
         }
         const std::string text = f.str();
         writeFileSafely(iniFilePath(), text.data(), text.size());

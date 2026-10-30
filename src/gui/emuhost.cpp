@@ -2111,6 +2111,8 @@ bool EmuHost::injectBasic(const Bytes& program, std::string& why) {
 void EmuHost::runFrame() {
     if (!booted() || paused) { audioOut.clear(); return; }
     framesRun++;
+    // the advanced CRT filter's signal stage spreads the colour itself
+    if (video) video->chromaSpread = !(crtFilter.enabled && crtFilter.signal);
     timelineFrameStart();
     if (typedAt < typed.size() && emu->keyboard && !moviePlay_) {   // typeText's queue: a key at a time
         const char c = typed[typedAt];
